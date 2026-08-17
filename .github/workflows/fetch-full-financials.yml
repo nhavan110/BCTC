@@ -1,0 +1,55 @@
+name: Fetch Full Financial Statements
+
+on:
+  # Chỉ chạy thủ công qua tab Actions - không có lịch tự động.
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Mã chứng khoán, cách nhau bởi dấu phẩy (vd HPG,TCB,FPT)"
+        required: false
+        default: "HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run fetch script
+        run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
+
+      - name: Merge CSV -> Excel (3 sheet/mã, giữ lại lịch sử nhiều năm)
+        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
+
+      - name: Upload CSVs + Excel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-financial-statements
+          path: |
+            financials/**/*.csv
+            financials/**/*.xlsx
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "financials/"
+          if git diff --cached --quiet; then
+            echo "Không có thay đổi dữ liệu, bỏ qua commit."
+          else
+            git commit -m "chore: cập nhật BCTC đầy đủ $(date -u +'%Y-%m-%d')"
+            git push
+          fi
