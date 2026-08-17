@@ -19,21 +19,27 @@ python fetch_full_financials.py HPG,TCB,FPT,PNJ      # nhiều mã, cách nhau d
 
 Kết quả: `financials/<MÃ>/<MÃ>_balance_sheet.csv`,
 `financials/<MÃ>/<MÃ>_income_statement.csv`,
-`financials/<MÃ>/<MÃ>_cash_flow.csv`.
+`financials/<MÃ>/<MÃ>_cash_flow.csv` — đây chỉ là dữ liệu **tạm**, dùng làm
+đầu vào cho `merge_financials.py` (bước 2 bên dưới) rồi bị xoá; repo chỉ giữ
+lại file Excel.
 
 Nếu 1 mã lỗi (vd bị chặn IP tạm thời), script vẫn tiếp tục chạy các mã còn
 lại thay vì dừng toàn bộ. Có sẵn workflow GitHub Actions
 `.github/workflows/fetch-full-financials.yml` (chỉ chạy thủ công qua tab
 Actions — không có lịch tự động) cho cả rổ 8 mã mặc định (HPG, TCB, FPT,
-PNJ, MWG, FRT, MBB, TCX).
+PNJ, MWG, FRT, MBB, TCX). Workflow này tự fetch CSV -> merge vào Excel ->
+xoá CSV -> commit lại chỉ file `.xlsx`.
 
 ### 2. `merge_financials.py` — gộp 3 file CSV thành 1 file Excel theo mã
 
 Với mỗi mã (thư mục con trong `financials/`), gộp 3 file CSV
 (`balance_sheet`, `income_statement`, `cash_flow`) thành **1 file Excel**
-`financials/<MÃ>/<MÃ>_financials.xlsx` với 3 sheet cùng tên. Sau này có thể
-thêm sheet `financial_ratios` (chỉ số tài chính) — script sẽ giữ nguyên sheet
-đó nếu đã tồn tại, chỉ cập nhật 3 sheet báo cáo gốc.
+`financials/<MÃ>/<MÃ>_financials.xlsx` với 3 sheet cùng tên — đây là file
+**duy nhất được giữ lại và commit vào repo**; 3 file CSV nguồn chỉ là dữ
+liệu tạm và có thể xoá đi sau khi gộp xong (`.gitignore` đã loại `*.csv`
+trong `financials/`). Sau này có thể thêm sheet `financial_ratios` (chỉ số
+tài chính) — script sẽ giữ nguyên sheet đó nếu đã tồn tại, chỉ cập nhật 3
+sheet báo cáo gốc.
 
 ```bash
 python merge_financials.py                    # gộp tất cả mã có trong financials/
@@ -79,12 +85,10 @@ pip install -r requirements.txt
 
 ```
 .
-├── fetch_full_financials.py   # lấy BCTC đầy đủ từ vnstock -> CSV
+├── fetch_full_financials.py   # lấy BCTC đầy đủ từ vnstock -> CSV tạm
 ├── merge_financials.py        # gộp 3 CSV/mã -> 1 file Excel (3 sheet), merge dữ liệu qua các năm
-├── financials/<MÃ>/<MÃ>_balance_sheet.csv
-├── financials/<MÃ>/<MÃ>_income_statement.csv
-├── financials/<MÃ>/<MÃ>_cash_flow.csv
-├── financials/<MÃ>/<MÃ>_financials.xlsx   # tạo bởi merge_financials.py
+├── financials/<MÃ>/<MÃ>_financials.xlsx   # file DUY NHẤT được commit, do merge_financials.py tạo
 ├── requirements.txt
+├── .gitignore                 # loại financials/**/*.csv (chỉ là file tạm)
 └── README.md
 ```
