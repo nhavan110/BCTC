@@ -1,0 +1,27 @@
+﻿item,item_en,item_id,2025,2024,2023,2022
+Tổng lợi nhuận/lỗ trước thuế,Net Accounting Profit/(loss) before tax,net_accounting_profit_loss_before_tax,34268358000000.0,28829328000000.0,26306089000000.0,22729320000000.0
+Chi phí thuế TNDN hiện hành,Business income tax - current,business_income_tax_current,-6876871000000.0,-5888266000000.0,-5269869000000.0,-4582973000000.0
+Chi phí thuế TNDN hoãn lại,Business income tax - deferred,business_income_tax_deferred,-8509000000.0,10202000000.0,17572000000.0,8838000000.0
+Chi phí thuế thu nhập doanh nghiệp,Business income tax expenses,business_income_tax_expenses,-6885380000000.0,-5878064000000.0,-5252297000000.0,-4574135000000.0
+Lợi nhuận sau thuế,Net profit/(loss) after tax,net_profit_loss_after_tax,27382978000000.0,22951264000000.0,21053792000000.0,18155185000000.0
+Lợi ích của cổ đông thiểu số,Minority interest,minority_interest,-604039000000.0,-317507000000.0,-377004000000.0,-672450000000.0
+Cổ đông của Công ty mẹ,Attributable to parent company,attributable_to_parent_company,26778939000000.0,22633757000000.0,20676788000000.0,17482735000000.0
+Lãi cơ bản trên cổ phiếu (VND),EPS basic (VND),eps_basic_vnd,3325.0,3724.0,3966.0,3856.0
+Lãi trên cổ phiếu pha loãng (VND),EPS diluted (VND),eps_diluted_vnd,0.0,0.0,0.0,0.0
+Thu nhập lãi và các khoản thu nhập tương tự,Interest and Similar Income,interest_and_similar_income,89088116000000.0,69061893000000.0,69143043000000.0,52485812000000.0
+Chi phí lãi và các chi phí tương tự,Interest and Similar Expenses,interest_and_similar_expenses,-37477999000000.0,-27909674000000.0,-30459195000000.0,-16462690000000.0
+Thu nhập lãi thuần,Net Interest Income,net_interest_income,51610117000000.0,41152219000000.0,38683848000000.0,36023122000000.0
+Thu nhập từ dịch vụ,Fees and Commission Income,fees_and_commission_income,18062236000000.0,14602602000000.0,13137624000000.0,14243734000000.0
+Chi phí dịch vụ,Fees and Commission Expenses,fees_and_commission_expenses,-11483555000000.0,-10234353000000.0,-9052399000000.0,-10108166000000.0
+Lãi/Lỗ thuần từ hoạt động dịch vụ,Net Fee and Commission Income,net_fee_and_commission_income,6578681000000.0,4368249000000.0,4085225000000.0,4135568000000.0
+Lãi/(lỗ) thuần từ hoạt động kinh doanh ngoại hối và vàng,Net gain/(loss) from foreign currency and gold dealings,net_gain_loss_from_foreign_currency_and_gold_dealings,1756922000000.0,2000164000000.0,1209825000000.0,1703960000000.0
+Lãi/(lỗ) thuần từ mua bán chứng khoán kinh doanh,Net gain/(loss) from trading of trading securities,net_gain_loss_from_trading_of_trading_securities,668384000000.0,1756022000000.0,541566000000.0,141128000000.0
+Lãi/(lỗ) thuần từ mua bán chứng khoán đầu tư,Net gain/(loss) from disposal of investment securities,net_gain_loss_from_disposal_of_investment_securities,1590093000000.0,2803105000000.0,300404000000.0,1315248000000.0
+Thu nhập khác,Other Income,other_income,6479624000000.0,4658444000000.0,3457702000000.0,3025807000000.0
+Chi phí khác,Other Expenses,other_expenses,-1165150000000.0,-1377624000000.0,-1029591000000.0,-884149000000.0
+Lãi/(lỗ) thuần từ hoạt động khác,Net Other income/expenses,net_other_income_expenses,5314474000000.0,3280820000000.0,2428111000000.0,2141658000000.0
+Thu nhập từ cổ tức,Dividends Income,dividends_income,174344000000.0,52643000000.0,57083000000.0,131941000000.0
+Tổng thu nhập hoạt động,Total Operating Income,total_operating_income,67693015000000.0,55413222000000.0,47306062000000.0,45592625000000.0
+Chi phí quản lý doanh nghiệp,General and Admin Expenses,general_and_admin_expenses,-19681153000000.0,-17007250000000.0,-14912941000000.0,-14815628000000.0
+Lợi nhuận thuần hoạt động trước khi trích lập dự phòng tổn thất tín dụng,Net Operating Profit Before Allowance for Credit Loss,net_operating_profit_before_allowance_for_credit_loss,48011862000000.0,38405972000000.0,32393121000000.0,30776997000000.0
+Trích lập dự phòng tổn thất tín dụng,Provision for Credit Losses,provision_for_credit_losses,-13743504000000.0,-9576644000000.0,-6087032000000.0,-8047677000000.0
