@@ -15,6 +15,40 @@ import sys
 import re
 import pandas as pd
 
+
+def _patch_vnstock_hosting_service_bug():
+    """
+    Vá lỗi UnboundLocalError trong vnstock (bản 4.0.6):
+    vnstock.core.utils.env.get_hosting_service() không gán giá trị cho biến
+    'hosting_service' khi chạy trên môi trường không phải Colab/Codespace/
+    Replit/Kaggle/HF Spaces (ví dụ: GitHub Actions runner thường, máy local
+    bình thường), gây crash ngay khi gọi bất kỳ API nào của vnstock.
+
+    Hàm này monkeypatch lại get_hosting_service() để trả về "Local or Unknown"
+    thay vì raise lỗi, không ảnh hưởng đến logic lấy dữ liệu.
+    Có thể xoá đoạn patch này khi vnstock phát hành bản vá chính thức.
+    """
+    try:
+        from vnstock.core.utils import env as vnstock_env
+
+        _original = vnstock_env.get_hosting_service
+
+        def _safe_get_hosting_service():
+            try:
+                result = _original()
+                return result if result is not None else "Local or Unknown"
+            except UnboundLocalError:
+                return "Local or Unknown"
+
+        vnstock_env.get_hosting_service = _safe_get_hosting_service
+    except Exception:
+        # Nếu cấu trúc nội bộ vnstock đã thay đổi (bản mới hơn đã tự fix bug này),
+        # bỏ qua patch, không làm gián đoạn chương trình.
+        pass
+
+
+_patch_vnstock_hosting_service_bug()
+
 SYMBOL = sys.argv[1].upper() if len(sys.argv) > 1 else "HPG"
 OUTPUT_FILE = f"{SYMBOL}_financial_ratios.csv"
 
