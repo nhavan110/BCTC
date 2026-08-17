@@ -98,6 +98,24 @@ def _find_col_wide(df: pd.DataFrame, keywords_all: list):
     return None
 
 
+def _dedupe_columns(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    """
+    Nếu DataFrame có tên cột trùng lặp (đã gặp thực tế với nguồn VCI, ví dụ
+    cột '2018' xuất hiện nhiều lần), việc truy cập theo tên cột sẽ trả về
+    nhiều giá trị thay vì 1 -> gây lỗi khó hiểu ở phía sau. Hàm này chỉ giữ
+    lại lần xuất hiện ĐẦU TIÊN của mỗi tên cột trùng, và cảnh báo rõ ràng.
+    """
+    cols = list(df.columns)
+    dup_count = len(cols) - len(set(map(str, cols)))
+    if dup_count > 0:
+        print(
+            f"CẢNH BÁO: {label} có {dup_count} cột bị trùng tên "
+            f"(vd nhiều cột cùng tên năm) -> chỉ giữ lại cột đầu tiên của mỗi tên."
+        )
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    return df
+
+
 def _dump_diagnostics(label: str, df: pd.DataFrame):
     print(f"\n--- CHẨN ĐOÁN: {label} ---")
     print(f"Shape: {df.shape}")
@@ -125,6 +143,7 @@ def extract_metrics(finance) -> pd.DataFrame:
         ratio_df.columns = [
             "_".join([str(c) for c in col if c]).strip() for col in ratio_df.columns
         ]
+    ratio_df = _dedupe_columns(ratio_df, "ratio()")
 
     long_format = _is_long_format(ratio_df)
     result = pd.DataFrame()
@@ -200,6 +219,7 @@ def _compute_net_profit_growth(finance):
         income_df.columns = [
             "_".join([str(c) for c in col if c]).strip() for col in income_df.columns
         ]
+    income_df = _dedupe_columns(income_df, "income_statement()")
 
     if _is_long_format(income_df):
         periods = _period_columns(income_df)
@@ -254,12 +274,16 @@ def main():
         finance = Finance(symbol=SYMBOL, source="VCI")
         result = extract_metrics(finance)
     except Exception as e:
+        import traceback
+
         print(
             "Lỗi khi gọi API vnstock (VCI). Nguyên nhân thường gặp:\n"
             "  - Không có kết nối internet / bị chặn IP tạm thời\n"
             "  - vnstock đã đổi cấu trúc API (kiểm tra bản mới nhất: pip install -U vnstock)\n"
-            f"Chi tiết lỗi: {e}"
+            f"Chi tiết lỗi: {e}\n"
+            "\n--- TRACEBACK ĐẦY ĐỦ (để chẩn đoán) ---"
         )
+        traceback.print_exc()
         sys.exit(1)
 
     if result is None or result.empty or "Nam" not in result.columns:
