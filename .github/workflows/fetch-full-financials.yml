@@ -34,13 +34,14 @@ jobs:
       - name: Merge CSV -> Excel (3 sheet/mã, giữ lại lịch sử nhiều năm)
         run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
 
-      - name: Upload CSVs + Excel as artifact
+      - name: Xoá CSV tạm (chỉ giữ lại file Excel)
+        run: find financials -name "*.csv" -delete
+
+      - name: Upload Excel as artifact
         uses: actions/upload-artifact@v4
         with:
           name: full-financial-statements
-          path: |
-            financials/**/*.csv
-            financials/**/*.xlsx
+          path: "financials/**/*.xlsx"
 
       - name: Commit and push if changed
         run: |
