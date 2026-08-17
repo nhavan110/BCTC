@@ -77,6 +77,15 @@ def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _drop_unused_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bỏ các cột không cần thiết (item_en, item_id) - chỉ giữ tên khoản mục
+    tiếng Việt (item)."""
+    drop_cols = [c for c in ("item_en", "item_id") if c in df.columns]
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+    return df
+
+
 def _fetch_one_statement(finance, symbol: str, method_name: str) -> pd.DataFrame:
     method = getattr(finance, method_name)
     df = method(period="year", lang="en", dropna=False)
@@ -84,6 +93,7 @@ def _fetch_one_statement(finance, symbol: str, method_name: str) -> pd.DataFrame
         raise RuntimeError(f"{method_name}() trả về rỗng cho mã {symbol}.")
     df = _flatten_columns(df)
     df = _dedupe_columns(df, f"{symbol}.{method_name}()")
+    df = _drop_unused_columns(df)
     return df
 
 

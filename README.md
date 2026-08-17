@@ -1,25 +1,15 @@
 # BCTC (vnstock)
 
-Hai script lấy dữ liệu tài chính theo **năm** từ [vnstock](https://github.com/thinh-vu/vnstock)
-(nguồn dữ liệu VCI - Vietcap):
+Script lấy dữ liệu tài chính theo **năm** từ [vnstock](https://github.com/thinh-vu/vnstock)
+(nguồn dữ liệu VCI - Vietcap), cộng thêm script gộp dữ liệu thành file Excel:
 
-### 1. `fetch_hpg_financials.py` — chỉ số rút gọn (ratio)
-
-Xuất 3 chỉ số: ROE (%), Biên lợi nhuận gộp (%), Tăng trưởng LNST (%) YoY.
-
-```bash
-python fetch_hpg_financials.py        # mặc định mã HPG
-python fetch_hpg_financials.py VNM    # hoặc truyền mã khác
-```
-
-Kết quả: `<MÃ>_financial_ratios.csv` trong thư mục hiện tại.
-
-### 2. `fetch_full_financials.py` — báo cáo tài chính đầy đủ (BCTC)
+### 1. `fetch_full_financials.py` — báo cáo tài chính đầy đủ (BCTC)
 
 Xuất **toàn bộ khoản mục gốc** của 3 báo cáo: Cân đối kế toán (balance sheet),
 Kết quả kinh doanh (income statement), Lưu chuyển tiền tệ (cash flow). Không
 rút gọn, không tính chỉ số — dữ liệu ở dạng long-format (mỗi dòng 1 khoản
-mục, mỗi cột 1 năm) giống hệt cấu trúc trả về từ vnstock.
+mục, mỗi cột 1 năm) giống hệt cấu trúc trả về từ vnstock. Cột `item_en` và
+`item_id` được loại bỏ, chỉ giữ lại cột `item` (tên khoản mục tiếng Việt).
 
 ```bash
 python fetch_full_financials.py                    # mặc định mã HPG
@@ -33,8 +23,34 @@ Kết quả: `financials/<MÃ>/<MÃ>_balance_sheet.csv`,
 
 Nếu 1 mã lỗi (vd bị chặn IP tạm thời), script vẫn tiếp tục chạy các mã còn
 lại thay vì dừng toàn bộ. Có sẵn workflow GitHub Actions
-`.github/workflows/fetch-full-financials.yml` chạy định kỳ hàng tuần cho cả
-rổ 8 mã mặc định (HPG, TCB, FPT, PNJ, MWG, FRT, MBB, TCX).
+`.github/workflows/fetch-full-financials.yml` (chỉ chạy thủ công qua tab
+Actions — không có lịch tự động) cho cả rổ 8 mã mặc định (HPG, TCB, FPT,
+PNJ, MWG, FRT, MBB, TCX).
+
+### 2. `merge_financials.py` — gộp 3 file CSV thành 1 file Excel theo mã
+
+Với mỗi mã (thư mục con trong `financials/`), gộp 3 file CSV
+(`balance_sheet`, `income_statement`, `cash_flow`) thành **1 file Excel**
+`financials/<MÃ>/<MÃ>_financials.xlsx` với 3 sheet cùng tên. Sau này có thể
+thêm sheet `financial_ratios` (chỉ số tài chính) — script sẽ giữ nguyên sheet
+đó nếu đã tồn tại, chỉ cập nhật 3 sheet báo cáo gốc.
+
+```bash
+python merge_financials.py                    # gộp tất cả mã có trong financials/
+python merge_financials.py HPG                 # 1 mã
+python merge_financials.py HPG,TCB,FPT,PNJ      # nhiều mã, cách nhau dấu phẩy
+```
+
+**Cách gộp dữ liệu qua thời gian:** dữ liệu mới được đối chiếu với dữ liệu cũ
+trong file Excel (nếu đã có) theo cột `item`:
+- Nếu tên khoản mục (`item`) **trùng khớp** với dòng đã có → merge các cột
+  năm mới vào dòng đó (đè giá trị năm trùng nếu có, thêm cột năm mới nếu
+  chưa có) → theo thời gian, các năm cũ được giữ lại, các năm mới được nối
+  thêm.
+- Nếu **không trùng khớp** (khoản mục mới hoàn toàn, chưa từng thấy trong
+  dữ liệu cũ) → **không merge** dòng đó, dữ liệu cũ giữ nguyên không đổi.
+- Nếu file Excel chưa tồn tại (lần chạy đầu tiên), toàn bộ dữ liệu CSV hiện
+  tại được dùng làm nền ban đầu.
 
 ## Cài đặt
 
@@ -63,7 +79,12 @@ pip install -r requirements.txt
 
 ```
 .
-├── fetch_hpg_financials.py   # script chính
+├── fetch_full_financials.py   # lấy BCTC đầy đủ từ vnstock -> CSV
+├── merge_financials.py        # gộp 3 CSV/mã -> 1 file Excel (3 sheet), merge dữ liệu qua các năm
+├── financials/<MÃ>/<MÃ>_balance_sheet.csv
+├── financials/<MÃ>/<MÃ>_income_statement.csv
+├── financials/<MÃ>/<MÃ>_cash_flow.csv
+├── financials/<MÃ>/<MÃ>_financials.xlsx   # tạo bởi merge_financials.py
 ├── requirements.txt
 └── README.md
 ```
