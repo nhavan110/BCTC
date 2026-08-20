@@ -58,12 +58,12 @@ def _load_csv(path: str) -> pd.DataFrame:
 
 
 def _sort_year_columns(cols):
-    """Sắp xếp các cột năm giảm dần (mới nhất trước), cột không phải số năm
-    (nếu có) được đẩy xuống cuối, giữ nguyên thứ tự gốc."""
+    """Sắp xếp các cột năm tăng dần (cũ nhất bên trái, mới nhất bên phải),
+    cột không phải số năm (nếu có) được đẩy xuống cuối, giữ nguyên thứ tự gốc."""
 
     def key(c):
         try:
-            return (0, -int(c))
+            return (0, int(c))
         except (TypeError, ValueError):
             return (1, str(c))
 
@@ -102,18 +102,38 @@ def merge_sheet(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def _autofit_number_column_width(ws, col_idx, min_width=10, max_width=24, padding=2):
+    """Tính độ rộng vừa đủ cho 1 cột SỐ (năm) dựa trên nội dung thực tế
+    (số đã format dấu phân cách nghìn), để không cần mở file chỉnh tay."""
+    max_len = 4  # tối thiểu bằng độ dài tiêu đề năm, vd "2022"
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+        for cell in row:
+            if cell.value is None:
+                continue
+            if isinstance(cell.value, (int, float)):
+                text = f"{cell.value:,.0f}"
+            else:
+                text = str(cell.value)
+            max_len = max(max_len, len(text))
+    return max(min_width, min(max_width, max_len + padding))
+
+
 def _format_statement_sheet(ws) -> None:
     """Định dạng chuẩn cho 1 sheet báo cáo (balance_sheet/income_statement/
     cash_flow) vừa được pandas ghi ra: font Tahoma, dòng tiêu đề (năm) in
-    đậm/nền màu, số có dấu phân cách nghìn, cố định dòng 1 + cột A, độ rộng
-    cột hợp lý, viền mảnh cho toàn vùng dữ liệu."""
+    đậm/nền màu, số có dấu phân cách nghìn, cố định dòng 1 + cột A, viền
+    mảnh cho toàn vùng dữ liệu.
+    Độ rộng cột: cột A (khoản mục) giữ cố định vì tên khoản mục dài, không
+    autofit theo nội dung (sẽ ra cột quá rộng); các cột năm (số) thì autofit
+    theo nội dung thực tế để hiển thị đủ luôn, không cần mở file chỉnh tay."""
     if ws.max_row < 1 or ws.max_column < 1:
         return
 
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 42
     for col_idx in range(2, ws.max_column + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 15
+        width = _autofit_number_column_width(ws, col_idx)
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
         for cell in row:
