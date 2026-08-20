@@ -20,15 +20,10 @@ Kết quả (trong thư mục con financials/<MÃ>/):
 
 import sys
 import os
-import time
 import pandas as pd
 
 DEFAULT_SYMBOLS = ["HPG"]
 OUTPUT_DIR = "financials"
-
-# Giữ khoảng cách giữa các lần gọi API để tránh vượt rate limit.
-# Community có tối đa 60 requests/phút khi dùng API key.
-REQUEST_DELAY_SECONDS = 2.5
 
 STATEMENTS = {
     "balance_sheet": "balance_sheet",
@@ -60,22 +55,6 @@ def _patch_vnstock_hosting_service_bug():
 
 
 _patch_vnstock_hosting_service_bug()
-
-
-def _register_vnstock_api_key():
-    """Đăng ký API key từ biến môi trường, không hard-code key vào repository."""
-    api_key = os.getenv("VNSTOCK_API_KEY", "").strip()
-    if not api_key:
-        print("Không tìm thấy VNSTOCK_API_KEY -> chạy ở chế độ Guest.")
-        return
-
-    try:
-        from vnstock import register_user
-        register_user(api_key=api_key)
-        print("Đã xác thực Vnstock bằng API key.")
-    except Exception as e:
-        print(f"CẢNH BÁO: Không đăng ký được VNSTOCK_API_KEY: {e}")
-        print("Tiếp tục chạy; Vnstock có thể sử dụng chế độ Guest.")
 
 
 def _dedupe_columns(df: pd.DataFrame, label: str) -> pd.DataFrame:
@@ -125,22 +104,16 @@ def fetch_symbol(symbol: str) -> dict:
 
     finance = Finance(symbol=symbol, source="VCI")
     results = {}
-    for index, (label, method_name) in enumerate(STATEMENTS.items()):
+    for label, method_name in STATEMENTS.items():
         try:
             print(f"  -> Đang lấy {label} cho {symbol}...")
             results[label] = _fetch_one_statement(finance, symbol, method_name)
         except Exception as e:
             print(f"  LỖI khi lấy {label} cho {symbol}: {e}")
-        finally:
-            # Không sleep sau request cuối cùng của toàn bộ symbol cũng không
-            # gây hại; giữ logic đơn giản và an toàn cho rate limit.
-            time.sleep(REQUEST_DELAY_SECONDS)
     return results
 
 
 def main():
-    _register_vnstock_api_key()
-
     if len(sys.argv) > 1:
         symbols = [s.strip().upper() for s in sys.argv[1].split(",") if s.strip()]
     else:
