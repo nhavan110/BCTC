@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # API key được lưu trong GitHub Settings > Secrets and variables > Actions.
+  # Không ghi key trực tiếp vào workflow.
+  VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -32,7 +37,7 @@ jobs:
         run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
 
       - name: Merge CSV -> Excel (3 sheet/mã, giữ lại lịch sử nhiều năm)
-        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
+        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,FRT,TCX' }}"
 
       - name: Xoá CSV tạm (chỉ giữ lại file Excel)
         run: find financials -name "*.csv" -delete
