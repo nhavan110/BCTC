@@ -53,6 +53,7 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 # ngưỡng giá trị bằng Conditional Formatting "Cell Is").
 FILL_GOOD = PatternFill("solid", fgColor="C6E0B4")   # xanh nhạt: tích cực
 FILL_BAD = PatternFill("solid", fgColor="F8CBAD")    # cam/đỏ nhạt: rủi ro/tiêu cực
+FILL_AMBER = PatternFill("solid", fgColor="FFE699")  # vàng/hổ phách: trung tính/cảnh báo nhẹ
 
 # ---------------------------------------------------------------------------
 # 1) Khai báo khoản mục thô cần trích xuất: key -> nhãn hiển thị mặc định
@@ -202,25 +203,25 @@ RATIO_SECTIONS = [
         "metrics": [
             _m("ROE (LNST CĐ Cty mẹ / VCSH bình quân)",
                lambda R, col, prior: (f"{R('ni_parent', col)}/(({R('equity', col)}+{R('equity', prior)})/2)"
-                                       if prior else None), cf="posneg"),
+                                       if prior else None), cf="roe"),
             _m("ROA (LNST / Tổng tài sản bình quân)",
                lambda R, col, prior: (f"{R('ni_total', col)}/(({R('total_assets', col)}+{R('total_assets', prior)})/2)"
                                        if prior else None), cf="posneg"),
             _m("Tăng trưởng LN Cổ đông Cty mẹ",
                lambda R, col, prior: (f"({R('ni_parent', col)}-{R('ni_parent', prior)})/ABS({R('ni_parent', prior)})"
-                                       if prior else None), cf="posneg"),
+                                       if prior else None), cf="growth"),
             _m("Tăng trưởng Doanh thu thuần",
                lambda R, col, prior: (f"({R('revenue', col)}-{R('revenue', prior)})/ABS({R('revenue', prior)})"
-                                       if prior else None), cf="posneg"),
+                                       if prior else None), cf="growth"),
         ],
     },
     {
         "title": "2. Biên lợi nhuận",
         "metrics": [
             _m("Biên lợi nhuận gộp",
-               lambda R, col, prior: f"{R('gross_profit', col)}/{R('revenue', col)}", cf="posneg"),
+               lambda R, col, prior: f"{R('gross_profit', col)}/{R('revenue', col)}", cf="gross_margin"),
             _m("Biên lợi nhuận ròng",
-               lambda R, col, prior: f"{R('ni_total', col)}/{R('revenue', col)}", cf="posneg"),
+               lambda R, col, prior: f"{R('ni_total', col)}/{R('revenue', col)}", cf="net_margin"),
         ],
     },
     {
@@ -228,13 +229,13 @@ RATIO_SECTIONS = [
         "metrics": [
             _m("D/E (Nợ vay / Vốn chủ sở hữu)",
                lambda R, col, prior: f"({R('st_borrow', col)}+{R('lt_borrow', col)})/{R('equity', col)}",
-               pct=False, cf="leverage"),
+               pct=False, cf="debt_equity"),
             _m("Nợ vay dài hạn/Vốn chủ sở hữu",
                lambda R, col, prior: f"{R('lt_borrow', col)}/{R('equity', col)}", pct=False, indent=True),
             _m("Nợ vay ngắn hạn/Vốn chủ sở hữu",
                lambda R, col, prior: f"{R('st_borrow', col)}/{R('equity', col)}", pct=False, indent=True),
             _m("Nợ phải trả/Vốn chủ sở hữu",
-               lambda R, col, prior: f"{R('total_liab', col)}/{R('equity', col)}", pct=False, cf="leverage"),
+               lambda R, col, prior: f"{R('total_liab', col)}/{R('equity', col)}", pct=False, cf="debt_equity"),
             _m("Nợ dài hạn/Vốn chủ sở hữu",
                lambda R, col, prior: f"{R('lt_liab', col)}/{R('equity', col)}", pct=False, indent=True),
             _m("Nợ ngắn hạn/Vốn chủ sở hữu",
@@ -245,7 +246,8 @@ RATIO_SECTIONS = [
         "title": "4. Chi phí & khả năng trả lãi",
         "metrics": [
             _m("Chi phí bán hàng, quản lý/LN gộp",
-               lambda R, col, prior: f"(ABS({R('selling_exp', col)})+ABS({R('admin_exp', col)}))/{R('gross_profit', col)}"),
+               lambda R, col, prior: f"(ABS({R('selling_exp', col)})+ABS({R('admin_exp', col)}))/{R('gross_profit', col)}",
+               cf="sga_ratio"),
             _m("Chi phí lãi vay/LN từ hoạt động kinh doanh",
                lambda R, col, prior: f"ABS({R('interest_exp', col)})/{R('operating_profit', col)}", cf="interest"),
         ],
@@ -268,7 +270,7 @@ RATIO_SECTIONS = [
         "title": "6. Cơ cấu tài sản",
         "metrics": [
             _m("Tiền và tương đương tiền/Tài sản",
-               lambda R, col, prior: f"{R('cash', col)}/{R('total_assets', col)}"),
+               lambda R, col, prior: f"{R('cash', col)}/{R('total_assets', col)}", cf="cash_ratio"),
             _m("Hàng tồn kho/Tài sản",
                lambda R, col, prior: f"{R('inventory', col)}/{R('total_assets', col)}"),
         ],
@@ -281,18 +283,64 @@ RATIO_SECTIONS = [
 RATIO_ROWS_COUNT = sum(1 + len(sec["metrics"]) for sec in RATIO_SECTIONS)
 
 # Ngưỡng tô màu theo giá trị (có thể chỉnh lại tuỳ khẩu vị rủi ro).
+# Mỗi rule: (operator, formula_list, fill, stopIfTrue).
+# - formula_list có 1 phần tử cho các operator 1 vế (lessThan, greaterThan,
+#   lessThanOrEqual, greaterThanOrEqual...), có 2 phần tử [min, max] cho
+#   operator 2 vế (between/notBetween).
+# - stopIfTrue=True dùng cho rule "đỏ" ở ranh giới để tránh chồng lấn màu
+#   với rule "vàng"/"xanh" liền kề khi giá trị đúng bằng mốc biên.
 CF_THRESHOLDS = {
-    "posneg": [("greaterThan", "0", FILL_GOOD), ("lessThan", "0", FILL_BAD)],
-    "leverage": [("greaterThan", "1", FILL_BAD), ("lessThan", "0.3", FILL_GOOD)],
-    "interest": [("greaterThan", "0.5", FILL_BAD), ("lessThan", "0.15", FILL_GOOD)],
+    # ROE: < 0.15 đỏ, >= 0.15 xanh lá
+    "roe": [
+        ("lessThan", ["0.15"], FILL_BAD),
+        ("greaterThanOrEqual", ["0.15"], FILL_GOOD),
+    ],
+    # Tăng trưởng LN sau thuế / Tăng trưởng DT: > 0.15 xanh lá, < 0.1 đỏ
+    "growth": [
+        ("greaterThan", ["0.15"], FILL_GOOD),
+        ("lessThan", ["0.1"], FILL_BAD),
+    ],
+    # Biên lợi nhuận gộp: <=0.1 đỏ, 0.1-0.3 vàng, >=0.3 xanh lá
+    "gross_margin": [
+        ("lessThanOrEqual", ["0.1"], FILL_BAD, True),
+        ("between", ["0.1", "0.3"], FILL_AMBER),
+        ("greaterThanOrEqual", ["0.3"], FILL_GOOD),
+    ],
+    # Biên lợi nhuận ròng: >= 0.1 xanh lá (không có ngưỡng đỏ theo yêu cầu)
+    "net_margin": [
+        ("greaterThanOrEqual", ["0.1"], FILL_GOOD),
+    ],
+    # D/E, Nợ phải trả/VCSH: <= 0.5 xanh lá (không có ngưỡng đỏ theo yêu cầu)
+    "debt_equity": [
+        ("lessThanOrEqual", ["0.5"], FILL_GOOD),
+    ],
+    # Chi phí bán hàng, quản lý/LN gộp: > 0.7 đỏ, <= 0.3 xanh lá
+    "sga_ratio": [
+        ("greaterThan", ["0.7"], FILL_BAD),
+        ("lessThanOrEqual", ["0.3"], FILL_GOOD),
+    ],
+    # Tiền mặt và tương đương/TS: ngoài [0.02, 0.3] đỏ, trong khoảng xanh lá
+    "cash_ratio": [
+        ("notBetween", ["0.02", "0.3"], FILL_BAD),
+        ("between", ["0.02", "0.3"], FILL_GOOD),
+    ],
+    # Các rule cũ, giữ lại cho những chỉ tiêu không nằm trong bảng yêu cầu mới
+    # (ROA, Nợ vay dài/ngắn hạn từng phần, Chi phí lãi vay/LN HĐKD...).
+    "posneg": [("greaterThan", ["0"], FILL_GOOD), ("lessThan", ["0"], FILL_BAD)],
+    "leverage": [("greaterThan", ["1"], FILL_BAD), ("lessThan", ["0.3"], FILL_GOOD)],
+    "interest": [("greaterThan", ["0.5"], FILL_BAD), ("lessThan", ["0.15"], FILL_GOOD)],
 }
 
 
 def _apply_cf(ws, row, cf_key, last_col):
     rng = f"B{row}:{last_col}{row}"
-    for operator, formula, fill in CF_THRESHOLDS[cf_key]:
+    for rule in CF_THRESHOLDS[cf_key]:
+        operator, formula, fill = rule[0], rule[1], rule[2]
+        stop_if_true = rule[3] if len(rule) > 3 else False
         ws.conditional_formatting.add(
-            rng, CellIsRule(operator=operator, formula=[formula], fill=fill)
+            rng,
+            CellIsRule(operator=operator, formula=formula, fill=fill,
+                       stopIfTrue=stop_if_true or None),
         )
 
 
