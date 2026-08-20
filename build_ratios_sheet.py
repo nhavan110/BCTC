@@ -44,16 +44,20 @@ FONT_NAME = "Tahoma"
 GREEN = "008000"    # link sang sheet khác (khối trích xuất)
 BLACK = "000000"    # công thức nội bộ (khối chỉ số)
 GREY = "808080"
-HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
-SECTION_FILL = PatternFill("solid", fgColor="D9E1F2")
+HEADER_FILL = PatternFill("solid", fgColor="FF1F4E78")
+SECTION_FILL = PatternFill("solid", fgColor="FFD9E1F2")
 THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 # Tô màu theo giá trị (tham khảo cách làm ở file FPT mẫu: fill nền theo
 # ngưỡng giá trị bằng Conditional Formatting "Cell Is").
-FILL_GOOD = PatternFill("solid", fgColor="C6E0B4")   # xanh nhạt: tích cực
-FILL_BAD = PatternFill("solid", fgColor="F8CBAD")    # cam/đỏ nhạt: rủi ro/tiêu cực
-FILL_AMBER = PatternFill("solid", fgColor="FFE699")  # vàng/hổ phách: trung tính/cảnh báo nhẹ
+# LƯU Ý: luôn dùng mã màu ARGB đủ 8 ký tự với alpha "FF" (đục hoàn toàn).
+# Nếu chỉ truyền 6 ký tự RGB, openpyxl tự thêm alpha "00" (trong suốt), khiến
+# nhiều trình đọc Excel/LibreOffice/WPS không hiển thị màu tô dù rule vẫn
+# tồn tại trong file (đây là lỗi từng gặp phải khi rule "biến mất").
+FILL_GOOD = PatternFill("solid", fgColor="FFC6E0B4")   # xanh nhạt: tích cực
+FILL_BAD = PatternFill("solid", fgColor="FFF8CBAD")    # cam/đỏ nhạt: rủi ro/tiêu cực
+FILL_AMBER = PatternFill("solid", fgColor="FFFFE699")  # vàng/hổ phách: trung tính/cảnh báo nhẹ
 
 # ---------------------------------------------------------------------------
 # 1) Khai báo khoản mục thô cần trích xuất: key -> nhãn hiển thị mặc định
