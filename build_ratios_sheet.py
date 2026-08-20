@@ -17,10 +17,11 @@ nhãn đó, không phụ thuộc thứ tự dòng.
 
 Bố cục sheet (trên xuống): tiêu đề -> khối CHỈ SỐ TÀI CHÍNH (kết quả) ->
 khối DỮ LIỆU TRÍCH XUẤT (nguồn, tham chiếu). Năm được xếp TĂNG DẦN từ trái
-sang phải (năm cũ nhất bên trái, mới nhất bên phải) dù dữ liệu gốc trong 3
-sheet báo cáo vẫn xếp giảm dần (mới nhất bên trái) — việc đảo cột chỉ nằm ở
-công thức lấy header năm, phần INDEX/MATCH dò theo GIÁ TRỊ năm nên không bị
-ảnh hưởng bởi thứ tự cột.
+sang phải (năm cũ nhất bên trái, mới nhất bên phải), khớp với thứ tự cột
+trong 3 sheet báo cáo nguồn (balance_sheet/income_statement/cash_flow) —
+2 bên đã đồng bộ nên header năm ở sheet này lấy thẳng theo cột tương ứng,
+không cần đảo. Phần INDEX/MATCH dò theo GIÁ TRỊ năm nên vẫn đúng dù thứ tự
+cột trong sheet nguồn có thay đổi sau này.
 """
 
 import os
@@ -35,11 +36,10 @@ SHEET_NAME = "chi_so_tai_chinh"
 
 # Cột hiển thị trên sheet chi_so_tai_chinh (trái -> phải).
 YEAR_COLS = ["B", "C", "D", "E"]
-# Cột hiển thị B..E giờ xếp năm TĂNG DẦN (B = cũ nhất, E = mới nhất), trong
-# khi 3 sheet nguồn (balance_sheet/income_statement/cash_flow) vẫn xếp GIẢM
-# DẦN (cột B = năm mới nhất). REVERSE_COL cho biết ô header năm ở cột hiển
-# thị nào lấy từ cột nào của sheet nguồn.
-REVERSE_COL = {"B": "E", "C": "D", "D": "C", "E": "B"}
+# Cột hiển thị B..E xếp năm TĂNG DẦN (B = cũ nhất, E = mới nhất), khớp thứ
+# tự cột trong 3 sheet nguồn (balance_sheet/income_statement/cash_flow) nên
+# header năm lấy thẳng theo cột tương ứng, không cần đảo.
+REVERSE_COL = {"B": "B", "C": "C", "D": "D", "E": "E"}
 # Cột "năm liền trước" (năm cũ hơn, nằm bên TRÁI) dùng cho các chỉ số cần so
 # sánh với năm trước (tăng trưởng, số dư bình quân). Năm cũ nhất (B) không
 # có năm trước -> None.
@@ -327,31 +327,8 @@ def build_workbook_ratio_sheet(path, symbol):
     ws.row_dimensions[r].height = 22
     r += 1
 
-    note = (
-        "Khối \"CHỈ SỐ TÀI CHÍNH\" tính bằng công thức từ khối \"DỮ LIỆU TRÍCH "
-        "XUẤT\" bên dưới, không phải số nhập tay. Khối \"DỮ LIỆU TRÍCH XUẤT\" "
-        "được dò tự động theo TÊN khoản mục (đúng theo tên gốc trong báo cáo) "
-        "và theo NĂM từ 3 sheet balance_sheet / income_statement — không tham "
-        "chiếu ô cố định. Có thể sửa nhãn khoản mục ở cột A khối này nếu công "
-        "ty đổi tên dòng; công thức sẽ tự dò lại. Các năm được xếp tăng dần từ "
-        "trái sang phải."
-    )
-    c = ws.cell(r, 1, note)
-    c.font = Font(name=FONT_NAME, size=9, italic=True, color=GREY)
-    c.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
-    ws.row_dimensions[r].height = 42
-    r += 1
-
-    extra_note = NOTE_BY_KIND.get(kind)
-    if extra_note:
-        c = ws.cell(r, 1, "Lưu ý: " + extra_note)
-        c.font = Font(name=FONT_NAME, size=9, italic=True, color="C00000")
-        c.alignment = Alignment(wrap_text=True, vertical="top")
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
-        ws.row_dimensions[r].height = 42
-        r += 1
-
+    # (Không còn chú thích phương pháp luận / lưu ý loại hình DN ở đầu sheet
+    # theo yêu cầu — bỏ để phần đầu sheet gọn, đi thẳng vào bảng chỉ số.)
     r += 1  # blank row
 
     # -------------------------------------------------------------------
