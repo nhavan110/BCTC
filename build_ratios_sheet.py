@@ -29,21 +29,16 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.comments import Comment
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "financials")
 SHEET_NAME = "chi_so_tai_chinh"
 
-# Cột hiển thị trên sheet chi_so_tai_chinh (trái -> phải).
-YEAR_COLS = ["B", "C", "D", "E"]
-# Cột hiển thị B..E xếp năm TĂNG DẦN (B = cũ nhất, E = mới nhất), khớp thứ
-# tự cột trong 3 sheet nguồn (balance_sheet/income_statement/cash_flow) nên
-# header năm lấy thẳng theo cột tương ứng, không cần đảo.
-REVERSE_COL = {"B": "B", "C": "C", "D": "D", "E": "E"}
-# Cột "năm liền trước" (năm cũ hơn, nằm bên TRÁI) dùng cho các chỉ số cần so
-# sánh với năm trước (tăng trưởng, số dư bình quân). Năm cũ nhất (B) không
-# có năm trước -> None.
-PRIOR_COL = {"B": None, "C": "B", "D": "C", "E": "D"}
+# Số cột năm (YEAR_COLS/REVERSE_COL/PRIOR_COL) KHÔNG còn khai báo cố định ở
+# đây nữa — được tính động trong build_workbook_ratio_sheet() theo đúng số
+# năm thực có ở dòng 1 sheet balance_sheet của từng công ty (để không bỏ sót
+# năm nào khi có dữ liệu mới). Thứ tự vẫn xếp TĂNG DẦN trái->phải (cũ nhất
+# bên trái, mới nhất bên phải), khớp thứ tự cột trong sheet nguồn.
 
 FONT_NAME = "Tahoma"
 GREEN = "008000"    # link sang sheet khác (khối trích xuất)
@@ -281,12 +276,9 @@ RATIO_SECTIONS = [
 ]
 
 # Số dòng khối CHỈ SỐ TÀI CHÍNH: mỗi section = 1 dòng tiêu đề + N dòng chỉ
-# số, cộng 1 dòng trắng NGĂN CÁCH giữa các section (không có dòng trắng sau
-# section cuối).
-RATIO_ROWS_COUNT = (
-    sum(1 + len(sec["metrics"]) for sec in RATIO_SECTIONS)
-    + (len(RATIO_SECTIONS) - 1)
-)
+# số. Không còn dòng trắng ngăn cách giữa các nhóm chỉ số (đã bỏ theo yêu
+# cầu để bảng gọn hơn).
+RATIO_ROWS_COUNT = sum(1 + len(sec["metrics"]) for sec in RATIO_SECTIONS)
 
 # Ngưỡng tô màu theo giá trị (có thể chỉnh lại tuỳ khẩu vị rủi ro).
 CF_THRESHOLDS = {
@@ -296,8 +288,8 @@ CF_THRESHOLDS = {
 }
 
 
-def _apply_cf(ws, row, cf_key):
-    rng = f"B{row}:E{row}"
+def _apply_cf(ws, row, cf_key, last_col):
+    rng = f"B{row}:{last_col}{row}"
     for operator, formula, fill in CF_THRESHOLDS[cf_key]:
         ws.conditional_formatting.add(
             rng, CellIsRule(operator=operator, formula=[formula], fill=fill)
@@ -308,6 +300,25 @@ def build_workbook_ratio_sheet(path, symbol):
     kind, template = SYMBOL_TEMPLATE[symbol]
 
     wb = openpyxl.load_workbook(path, data_only=False)
+
+    # ---- Xác định số năm THỰC TẾ từ dòng 1 sheet balance_sheet (không cố
+    # định 4 cột như trước) -> không bỏ sót năm nào khi có dữ liệu mới. ----
+    bs_ws = wb["balance_sheet"]
+    n_years = 0
+    while bs_ws.cell(1, 2 + n_years).value not in (None, ""):
+        n_years += 1
+    if n_years == 0:
+        n_years = 4
+    YEAR_COLS = [get_column_letter(2 + i) for i in range(n_years)]
+    # Xếp TĂNG DẦN trái->phải (cũ nhất bên trái, mới nhất bên phải), khớp
+    # đúng thứ tự cột nguồn -> không cần đảo cột khi lấy header năm.
+    REVERSE_COL = {col: col for col in YEAR_COLS}
+    PRIOR_COL = {col: (YEAR_COLS[i - 1] if i > 0 else None) for i, col in enumerate(YEAR_COLS)}
+    last_col = YEAR_COLS[-1]
+    last_col_idx = column_index_from_string(last_col)
+    spacer_col = get_column_letter(last_col_idx + 1)
+    n_cols = last_col_idx  # số cột A..last_col dùng để merge/fill header
+
     if SHEET_NAME in wb.sheetnames:
         del wb[SHEET_NAME]
     # chèn làm sheet thứ 4 (sau balance_sheet, income_statement, cash_flow)
@@ -315,21 +326,22 @@ def build_workbook_ratio_sheet(path, symbol):
     ws = wb.create_sheet(SHEET_NAME, idx)
 
     ws.sheet_view.showGridLines = False
-    for col, w in zip(["A", "B", "C", "D", "E", "F"], [42, 14, 14, 14, 14, 3]):
-        ws.column_dimensions[col].width = w
+    ws.column_dimensions["A"].width = 42
+    for col in YEAR_COLS:
+        ws.column_dimensions[col].width = 14
+    ws.column_dimensions[spacer_col].width = 3
 
     r = 1
     c = ws.cell(r, 1, f"CHỈ SỐ TÀI CHÍNH — {symbol}")
     c.font = Font(name=FONT_NAME, size=14, bold=True, color="FFFFFF")
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
-    for col in range(1, 6):
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n_cols)
+    for col in range(1, n_cols + 1):
         ws.cell(r, col).fill = HEADER_FILL
     ws.row_dimensions[r].height = 22
-    r += 1
 
-    # (Không còn chú thích phương pháp luận / lưu ý loại hình DN ở đầu sheet
-    # theo yêu cầu — bỏ để phần đầu sheet gọn, đi thẳng vào bảng chỉ số.)
-    r += 1  # blank row
+    # (Không còn chú thích phương pháp luận / lưu ý loại hình DN, không còn
+    # dòng trắng ở đầu sheet theo yêu cầu — đi thẳng vào bảng chỉ số.)
+    r += 1
 
     # -------------------------------------------------------------------
     # Tính trước vị trí dòng của khối II (DỮ LIỆU TRÍCH XUẤT, nằm dưới)
@@ -338,7 +350,7 @@ def build_workbook_ratio_sheet(path, symbol):
     # -------------------------------------------------------------------
     ratio_section_row = r
     ratio_header_row = ratio_section_row + 1
-    raw_section_row = ratio_header_row + 1 + RATIO_ROWS_COUNT + 1  # +1 dòng trắng
+    raw_section_row = ratio_header_row + 1 + RATIO_ROWS_COUNT + 1  # +1 dòng trắng ngăn 2 khối
     raw_header_row = raw_section_row + 1
     RAW_ROW = {key: raw_header_row + 1 + i for i, (key, _) in enumerate(RAW_ITEMS)}
 
@@ -349,17 +361,17 @@ def build_workbook_ratio_sheet(path, symbol):
     # ---------------- KHỐI I: CHỈ SỐ TÀI CHÍNH (đưa lên trên) ----------------
     c = ws.cell(ratio_section_row, 1, "I. CHỈ SỐ TÀI CHÍNH")
     c.font = Font(name=FONT_NAME, size=11, bold=True)
-    for col in range(1, 6):
+    for col in range(1, n_cols + 1):
         ws.cell(ratio_section_row, col).fill = SECTION_FILL
 
     ws.cell(ratio_header_row, 1, "Chỉ tiêu").font = Font(name=FONT_NAME, bold=True)
     for col in YEAR_COLS:
         src_col = REVERSE_COL[col]
-        cell = ws.cell(ratio_header_row, ord(col) - 64, f"='balance_sheet'!{src_col}1")
+        cell = ws.cell(ratio_header_row, column_index_from_string(col), f"='balance_sheet'!{src_col}1")
         cell.font = Font(name=FONT_NAME, bold=True)
         cell.number_format = "0"
         cell.alignment = Alignment(horizontal="center")
-    for col in range(1, 6):
+    for col in range(1, n_cols + 1):
         ws.cell(ratio_header_row, col).border = BORDER
 
     r = ratio_header_row + 1
@@ -377,7 +389,7 @@ def build_workbook_ratio_sheet(path, symbol):
         lbl_cell.border = BORDER
         for col in YEAR_COLS:
             prior = PRIOR_COL[col]
-            cell = ws.cell(r, ord(col) - 64)
+            cell = ws.cell(r, column_index_from_string(col))
             expr = formula_fn(R, col, prior)
             if expr is None:
                 cell.value = "n/a"
@@ -393,34 +405,33 @@ def build_workbook_ratio_sheet(path, symbol):
                     cell.number_format = "0.00\"x\""
             cell.border = BORDER
         if cf:
-            _apply_cf(ws, r, cf)
+            _apply_cf(ws, r, cf, last_col)
         r += 1
 
-    for i, sec in enumerate(RATIO_SECTIONS):
+    # Không còn dòng trắng ngăn cách giữa các nhóm chỉ số (đã bỏ theo yêu cầu).
+    for sec in RATIO_SECTIONS:
         section(sec["title"])
         for m in sec["metrics"]:
             metric(**m)
-        if i != len(RATIO_SECTIONS) - 1:
-            r += 1  # dòng trắng ngăn cách section
 
-    r += 1  # blank
+    r += 1  # 1 dòng trắng ngăn khối I và khối II
 
     assert r == raw_section_row, (r, raw_section_row)  # kiểm tra layout tính trước khớp thực tế
 
     # ---------------- KHỐI II: DỮ LIỆU TRÍCH XUẤT (đẩy xuống dưới) ----------
     c = ws.cell(raw_section_row, 1, "II. DỮ LIỆU TRÍCH XUẤT (tự động dò theo tên khoản mục)")
     c.font = Font(name=FONT_NAME, size=11, bold=True)
-    for col in range(1, 6):
+    for col in range(1, n_cols + 1):
         ws.cell(raw_section_row, col).fill = SECTION_FILL
 
     ws.cell(raw_header_row, 1, "Khoản mục").font = Font(name=FONT_NAME, bold=True)
     for col in YEAR_COLS:
         src_col = REVERSE_COL[col]
-        cell = ws.cell(raw_header_row, ord(col) - 64, f"='balance_sheet'!{src_col}1")
+        cell = ws.cell(raw_header_row, column_index_from_string(col), f"='balance_sheet'!{src_col}1")
         cell.font = Font(name=FONT_NAME, bold=True)
         cell.number_format = "0"
         cell.alignment = Alignment(horizontal="center")
-    for col in range(1, 6):
+    for col in range(1, n_cols + 1):
         ws.cell(raw_header_row, col).border = BORDER
 
     for key, default_label in RAW_ITEMS:
@@ -434,7 +445,7 @@ def build_workbook_ratio_sheet(path, symbol):
         lbl_cell.font = Font(name=FONT_NAME, size=10)
         lbl_cell.border = BORDER
         for col in YEAR_COLS:
-            cell = ws.cell(row, ord(col) - 64)
+            cell = ws.cell(row, column_index_from_string(col))
             if mapping is None:
                 cell.value = "n/a"
                 cell.font = Font(name=FONT_NAME, size=10, italic=True, color=GREY)
@@ -445,9 +456,9 @@ def build_workbook_ratio_sheet(path, symbol):
                 sheet_name, item_label = mapping
                 item_label_esc = item_label.replace('"', '""')
                 formula = (
-                    f'=IFERROR(INDEX({sheet_name}!$B:$E,'
+                    f'=IFERROR(INDEX({sheet_name}!$B:${last_col},'
                     f'MATCH("{item_label_esc}",{sheet_name}!$A:$A,0),'
-                    f'MATCH({col}${raw_header_row},{sheet_name}!$B$1:$E$1,0)),"")'
+                    f'MATCH({col}${raw_header_row},{sheet_name}!$B$1:${last_col}$1,0)),"")'
                 )
                 cell.value = formula
                 cell.font = Font(name=FONT_NAME, size=10, color=GREEN)
