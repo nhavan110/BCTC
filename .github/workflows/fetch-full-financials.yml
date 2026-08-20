@@ -16,6 +16,9 @@ env:
   # API key được lưu trong GitHub Settings > Secrets and variables > Actions.
   # Không ghi key trực tiếp vào workflow.
   VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+  # Dùng cho gdrive_download.py / gdrive_upload.py (đồng bộ Google Drive).
+  GDRIVE_SA_KEY: ${{ secrets.GDRIVE_SA_KEY }}
+  GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
 
 jobs:
   fetch:
@@ -33,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Tải file Excel "chuẩn" (đã có sheet chỉ số tự tạo) từ Google Drive về
+        run: python gdrive_download.py
+
       - name: Run fetch script
         run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
 
@@ -41,6 +47,9 @@ jobs:
 
       - name: Xoá CSV tạm (chỉ giữ lại file Excel)
         run: find financials -name "*.csv" -delete
+
+      - name: Đẩy file Excel đã cập nhật lên lại Google Drive
+        run: python gdrive_upload.py
 
       - name: Upload Excel as artifact
         uses: actions/upload-artifact@v4
