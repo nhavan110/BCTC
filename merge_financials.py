@@ -1,6 +1,6 @@
 """
 Gộp 3 file CSV (balance_sheet, income_statement, cash_flow) của mỗi mã trong
-thư mục financials/<MÃ>/ thành 1 file Excel financials/<MÃ>/<MÃ>_financials.xlsx
+thư mục financials/<MÃ>/ thành 1 file Excel financials/<MÃ>/<MÃ>.xlsx
 với 3 sheet cùng tên.
 
 Cách gộp dữ liệu qua thời gian (để không mất các năm cũ khi vnstock chỉ trả
@@ -26,6 +26,7 @@ Chạy:
 
 import sys
 import os
+import copy
 import shutil
 import pandas as pd
 import openpyxl
@@ -152,7 +153,7 @@ def _format_statement_sheet(ws) -> None:
 
 def process_symbol(symbol: str) -> bool:
     sym_dir = os.path.join(FINANCIALS_DIR, symbol)
-    out_path = os.path.join(sym_dir, f"{symbol}_financials.xlsx")
+    out_path = os.path.join(sym_dir, f"{symbol}.xlsx")
 
     if not os.path.isdir(sym_dir):
         print(f"  Bỏ qua {symbol}: không tìm thấy thư mục {sym_dir}")
@@ -223,10 +224,14 @@ def process_symbol(symbol: str) -> bool:
 
 
 def _copy_other_sheets(out_path, sheet_names):
-    """Copy nguyên trạng (giá trị, công thức, style cơ bản, độ rộng cột) các
-    sheet có tên trong `sheet_names` từ BẢN CŨ (backup tạm lấy trước khi
-    pandas ghi đè) sang file `out_path` vừa được pandas ghi lại (chỉ chứa 3
-    sheet báo cáo)."""
+    """Copy NGUYÊN TRẠNG (giá trị, công thức, style, độ rộng cột/dòng, ô
+    merge, freeze panes, Conditional Formatting, Comment, Data Validation,
+    Hyperlink) các sheet có tên trong `sheet_names` từ BẢN CŨ (backup tạm
+    lấy trước khi pandas ghi đè) sang file `out_path` vừa được pandas ghi
+    lại (chỉ chứa 3 sheet báo cáo). Đây là các sheet do người dùng tự tạo
+    (vd sheet chỉ số tài chính tự nhập công thức) -> không được đụng tới,
+    kể cả các phần định dạng nâng cao mà trước đây (bản cũ) từng bị bỏ sót
+    khi copy (conditional formatting/comment/data validation/hyperlink)."""
     backup_path = out_path + ".bak_other_sheets.xlsx"
     if not os.path.exists(backup_path):
         return
@@ -254,8 +259,19 @@ def _copy_other_sheets(out_path, sheet_names):
                     new_cell.border = cell.border.copy()
                     new_cell.alignment = cell.alignment.copy()
                     new_cell.number_format = cell.number_format
+                if cell.comment:
+                    new_cell.comment = copy.copy(cell.comment)
+                if cell.hyperlink:
+                    new_cell.hyperlink = copy.copy(cell.hyperlink)
         if src_ws.freeze_panes:
             dst_ws.freeze_panes = src_ws.freeze_panes
+        # Conditional Formatting (vd tô màu theo ngưỡng giá trị đặt trong Excel).
+        for cf in src_ws.conditional_formatting:
+            for rule in cf.rules:
+                dst_ws.conditional_formatting.add(str(cf.sqref), copy.copy(rule))
+        # Data Validation (vd dropdown list, ràng buộc nhập liệu).
+        for dv in src_ws.data_validations.dataValidation:
+            dst_ws.add_data_validation(copy.copy(dv))
     dst_wb.save(out_path)
     os.remove(backup_path)
 

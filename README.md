@@ -34,7 +34,7 @@ xoá CSV -> commit lại chỉ file `.xlsx`.
 
 Với mỗi mã (thư mục con trong `financials/`), gộp 3 file CSV
 (`balance_sheet`, `income_statement`, `cash_flow`) thành **1 file Excel**
-`financials/<MÃ>/<MÃ>_financials.xlsx` với 3 sheet cùng tên — đây là file
+`financials/<MÃ>/<MÃ>.xlsx` với 3 sheet cùng tên — đây là file
 **duy nhất được giữ lại và commit vào repo**; 3 file CSV nguồn chỉ là dữ
 liệu tạm và có thể xoá đi sau khi gộp xong (`.gitignore` đã loại `*.csv`
 trong `financials/`). Sau này có thể thêm sheet `financial_ratios` (chỉ số
@@ -57,6 +57,51 @@ trong file Excel (nếu đã có) theo cột `item`:
   dữ liệu cũ) → **không merge** dòng đó, dữ liệu cũ giữ nguyên không đổi.
 - Nếu file Excel chưa tồn tại (lần chạy đầu tiên), toàn bộ dữ liệu CSV hiện
   tại được dùng làm nền ban đầu.
+
+### 3. `gdrive_download.py` / `gdrive_upload.py` — đồng bộ với Google Drive
+
+Các sheet bạn tự tạo thêm trong file Excel (vd sheet chỉ số tài chính với
+công thức bạn tự nhập) **không bao giờ bị động tới** bởi `merge_financials.py`
+— script chỉ đọc/ghi 3 sheet báo cáo gốc (`balance_sheet`, `income_statement`,
+`cash_flow`); mọi sheet khác được copy nguyên trạng (giá trị, công thức,
+style, Conditional Formatting, Comment, Data Validation, Hyperlink).
+
+Vì file Excel "chuẩn" (đã có sheet bạn tự làm) được lưu trên Google Drive,
+2 script này giúp workflow luôn lấy đúng bản mới nhất làm nền trước khi cập
+nhật, rồi đẩy kết quả trở lại Drive:
+
+```bash
+python gdrive_download.py            # tải toàn bộ *.xlsx từ Drive về financials/<MÃ>/
+python gdrive_upload.py              # đẩy toàn bộ *.xlsx trong financials/ lên lại Drive
+```
+
+**Cấu trúc thư mục trên Google Drive** phải khớp với cấu trúc local
+(`GDRIVE_FOLDER_ID` là thư mục **gốc**, bên trong là các thư mục con theo
+mã, mỗi thư mục con chứa đúng 1 file `<MÃ>.xlsx`):
+
+```
+<thư mục gốc trên Drive (GDRIVE_FOLDER_ID)>/
+├── FPT/
+│   └── FPT.xlsx
+├── HPG/
+│   └── HPG.xlsx
+├── TCB/
+│   └── TCB.xlsx
+└── ...
+```
+
+`gdrive_download.py` tự dò từng thư mục con để tải đúng file về
+`financials/<MÃ>/<MÃ>.xlsx`. `gdrive_upload.py` tự tìm (hoặc tạo
+mới nếu chưa có) thư mục con cùng tên mã rồi upload/ghi đè file vào đúng
+thư mục con đó — không cần tự tạo tay thư mục con trên Drive trước.
+
+Cần 2 biến môi trường: `GDRIVE_SA_KEY` (nội dung JSON key của 1 Google
+Service Account) và `GDRIVE_FOLDER_ID` (ID thư mục Drive **gốc**). Xem
+hướng dẫn thiết lập từng bước ở đầu file `gdrive_utils.py`.
+
+**Thứ tự chạy đầy đủ** (đúng như trong workflow):
+`gdrive_download.py` → `fetch_full_financials.py` → `merge_financials.py`
+→ `gdrive_upload.py` → xoá CSV tạm → commit vào Git.
 
 ## Cài đặt
 
@@ -86,8 +131,11 @@ pip install -r requirements.txt
 ```
 .
 ├── fetch_full_financials.py   # lấy BCTC đầy đủ từ vnstock -> CSV tạm
-├── merge_financials.py        # gộp 3 CSV/mã -> 1 file Excel (3 sheet), merge dữ liệu qua các năm
-├── financials/<MÃ>/<MÃ>_financials.xlsx   # file DUY NHẤT được commit, do merge_financials.py tạo
+├── merge_financials.py        # gộp 3 CSV/mã -> 1 file Excel (3 sheet), merge dữ liệu qua các năm, giữ nguyên các sheet khác
+├── gdrive_utils.py             # hàm dùng chung để xác thực Google Drive (Service Account)
+├── gdrive_download.py          # tải *.xlsx từ Google Drive về (chạy trước merge)
+├── gdrive_upload.py            # đẩy *.xlsx đã cập nhật lên lại Google Drive (chạy sau merge)
+├── financials/<MÃ>/<MÃ>.xlsx   # file DUY NHẤT được commit, do merge_financials.py tạo
 ├── requirements.txt
 ├── .gitignore                 # loại financials/**/*.csv (chỉ là file tạm)
 └── README.md
