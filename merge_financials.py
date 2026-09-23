@@ -18,16 +18,25 @@ về vài năm gần nhất mỗi lần fetch):
 Nếu file Excel đã có thêm sheet khác (vd "financial_ratios" tự thêm sau
 này), sheet đó được giữ nguyên, không bị đụng tới.
 
+Hỗ trợ cả 2 kỳ báo cáo, chạy độc lập, ra 2 file Excel riêng biệt cho mỗi mã:
+    - period=year (mặc định)  -> đọc CSV "<MÃ>_<report>.csv"      -> ghi "<MÃ>.xlsx"
+    - period=quarter          -> đọc CSV "<MÃ>_Q_<report>.csv"    -> ghi "<MÃ>_Q.xlsx"
+Cách merge dữ liệu qua thời gian (theo cột "item") áp dụng như nhau cho cả
+2 kỳ; với period=quarter, tên cột kỳ có dạng "2024-Q1", "2024-Q2"... (sắp
+xếp tăng dần đúng thứ tự thời gian nhờ định dạng chuỗi cố định độ dài).
+
 Chạy:
-    python merge_financials.py                    # gộp tất cả mã có trong financials/
-    python merge_financials.py HPG                 # 1 mã
-    python merge_financials.py HPG,TCB,FPT,PNJ      # nhiều mã, cách nhau dấu phẩy
+    python merge_financials.py                          # gộp tất cả mã, period=year
+    python merge_financials.py HPG                       # 1 mã, period=year
+    python merge_financials.py HPG,TCB,FPT,PNJ            # nhiều mã, period=year
+    python merge_financials.py HPG,TCB,FPT,PNJ quarter     # nhiều mã, period=quarter
 """
 
 import sys
 import os
 import copy
 import shutil
+import tempfile
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -48,6 +57,10 @@ STATEMENT_SHEETS = {
 }
 
 DROP_COLUMNS = ["item_en", "item_id"]
+
+# period="year" -> hậu tố rỗng (giữ nguyên hành vi cũ: "<MÃ>_<report>.csv" -> "<MÃ>.xlsx").
+# period="quarter" -> hậu tố "_Q" ("<MÃ>_Q_<report>.csv" -> "<MÃ>_Q.xlsx").
+PERIOD_FILE_SUFFIX = {"year": "", "quarter": "_Q"}
 
 
 def _load_csv(path: str) -> pd.DataFrame:
@@ -151,9 +164,9 @@ def _format_statement_sheet(ws) -> None:
     ws.freeze_panes = "B2"
 
 
-def process_symbol(symbol: str) -> bool:
+def process_symbol(symbol: str, file_suffix: str = "") -> bool:
     sym_dir = os.path.join(FINANCIALS_DIR, symbol)
-    out_path = os.path.join(sym_dir, f"{symbol}.xlsx")
+    out_path = os.path.join(sym_dir, f"{symbol}{file_suffix}.xlsx")
 
     if not os.path.isdir(sym_dir):
         print(f"  Bỏ qua {symbol}: không tìm thấy thư mục {sym_dir}")
@@ -184,46 +197,73 @@ def process_symbol(symbol: str) -> bool:
             other_sheet_names = []
 
     backup_path = out_path + ".bak_other_sheets.xlsx"
-    if other_sheet_names and os.path.exists(out_path):
-        shutil.copyfile(out_path, backup_path)
+    tmp_path = None
 
-    output_sheets = {}
-    any_written = False
+    # Toàn bộ phần còn lại (đọc CSV, merge, ghi file) nằm trong try/finally
+    # để bảo đảm 2 file phụ (backup_path, tmp_path) LUÔN được dọn dẹp dù lỗi
+    # xảy ra ở bất kỳ bước nào (kể cả trước khi tmp_path được tạo) -> không
+    # để sót file rác, và out_path thật không bao giờ bị đụng tới cho tới
+    # khi mọi bước phía trên đã thành công.
+    try:
+        if other_sheet_names and os.path.exists(out_path):
+            shutil.copyfile(out_path, backup_path)
 
-    for sheet_name, suffix in STATEMENT_SHEETS.items():
-        csv_path = os.path.join(sym_dir, f"{symbol}_{suffix}.csv")
-        if not os.path.exists(csv_path):
-            print(f"  Bỏ qua sheet '{sheet_name}': không tìm thấy {csv_path}")
-            continue
+        output_sheets = {}
+        any_written = False
 
-        new_df = _load_csv(csv_path)
-        old_df = existing_sheets.get(sheet_name)
-        output_sheets[sheet_name] = merge_sheet(old_df, new_df)
-        any_written = True
+        for sheet_name, suffix in STATEMENT_SHEETS.items():
+            csv_path = os.path.join(sym_dir, f"{symbol}{file_suffix}_{suffix}.csv")
+            if not os.path.exists(csv_path):
+                print(f"  Bỏ qua sheet '{sheet_name}': không tìm thấy {csv_path}")
+                continue
 
-    if not any_written:
-        print(f"  Không có CSV nào cho {symbol}, bỏ qua.")
-        return False
+            new_df = _load_csv(csv_path)
+            old_df = existing_sheets.get(sheet_name)
+            output_sheets[sheet_name] = merge_sheet(old_df, new_df)
+            any_written = True
 
-    ordered_names = [n for n in STATEMENT_SHEETS if n in output_sheets]
+        if not any_written:
+            print(f"  Không có CSV nào cho {symbol}, bỏ qua.")
+            return False
 
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        for name in ordered_names:
-            output_sheets[name].to_excel(writer, sheet_name=name, index=False)
-            _format_statement_sheet(writer.sheets[name])
+        ordered_names = [n for n in STATEMENT_SHEETS if n in output_sheets]
 
-    # Copy nguyên trạng (công thức + định dạng) các sheet khác từ file cũ
-    # (vd "chi_so_tai_chinh") sang file vừa ghi ở trên.
-    final_order = list(ordered_names)
-    if other_sheet_names:
-        _copy_other_sheets(out_path, other_sheet_names)
-        final_order += other_sheet_names
+        # Ghi an toàn (atomic write): ghi ra file tạm CÙNG THƯ MỤC với
+        # out_path (đảm bảo os.replace ở cuối là atomic, cùng filesystem),
+        # chỉ thay thế file thật sau khi mọi bước (ghi 3 sheet + copy sheet
+        # khác) đã thành công. Nếu có lỗi giữa chừng (dữ liệu bất thường,
+        # tiến trình bị ngắt...) file thật out_path không hề bị đụng tới ->
+        # không bao giờ bị hỏng/dở dang.
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            suffix=".xlsx", prefix=f".{symbol}{file_suffix}_", dir=sym_dir)
+        os.close(tmp_fd)
+
+        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+            for name in ordered_names:
+                output_sheets[name].to_excel(writer, sheet_name=name, index=False)
+                _format_statement_sheet(writer.sheets[name])
+
+        # Copy nguyên trạng (công thức + định dạng) các sheet khác từ file cũ
+        # (vd "chi_so_tai_chinh") sang file TẠM vừa ghi ở trên (không đụng
+        # tới out_path thật cho tới khi mọi thứ xong xuôi).
+        final_order = list(ordered_names)
+        if other_sheet_names:
+            _copy_other_sheets(tmp_path, backup_path, other_sheet_names)
+            final_order += other_sheet_names
+
+        os.replace(tmp_path, out_path)  # atomic, chỉ 1 bước "chuyển giao" cuối cùng
+        tmp_path = None  # đã đổi tên thành out_path, không còn để dọn dẹp
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
 
     print(f"  Đã ghi {out_path}  (sheets: {', '.join(final_order)})")
     return True
 
 
-def _copy_other_sheets(out_path, sheet_names):
+def _copy_other_sheets(out_path, backup_path, sheet_names):
     """Copy NGUYÊN TRẠNG (giá trị, công thức, style, độ rộng cột/dòng, ô
     merge, freeze panes, Conditional Formatting, Comment, Data Validation,
     Hyperlink) các sheet có tên trong `sheet_names` từ BẢN CŨ (backup tạm
@@ -232,7 +272,6 @@ def _copy_other_sheets(out_path, sheet_names):
     (vd sheet chỉ số tài chính tự nhập công thức) -> không được đụng tới,
     kể cả các phần định dạng nâng cao mà trước đây (bản cũ) từng bị bỏ sót
     khi copy (conditional formatting/comment/data validation/hyperlink)."""
-    backup_path = out_path + ".bak_other_sheets.xlsx"
     if not os.path.exists(backup_path):
         return
     src_wb = openpyxl.load_workbook(backup_path, data_only=False)
@@ -273,7 +312,6 @@ def _copy_other_sheets(out_path, sheet_names):
         for dv in src_ws.data_validations.dataValidation:
             dst_ws.add_data_validation(copy.copy(dv))
     dst_wb.save(out_path)
-    os.remove(backup_path)
 
 
 def main():
@@ -293,11 +331,28 @@ def main():
         print(f"Không tìm thấy mã nào trong '{FINANCIALS_DIR}/'.")
         sys.exit(1)
 
+    period = sys.argv[2].strip().lower() if len(sys.argv) > 2 else "year"
+    if period not in PERIOD_FILE_SUFFIX:
+        print(f"Tham số period không hợp lệ: '{period}'. Chỉ chấp nhận 'year' hoặc 'quarter'.")
+        sys.exit(1)
+    file_suffix = PERIOD_FILE_SUFFIX[period]
+
     any_success = False
+    failed_symbols = []
     for symbol in symbols:
-        print(f"\n=== Mã {symbol} ===")
-        if process_symbol(symbol):
-            any_success = True
+        print(f"\n=== Mã {symbol} ({period}) ===")
+        try:
+            if process_symbol(symbol, file_suffix):
+                any_success = True
+        except Exception as e:
+            # Cô lập lỗi theo từng mã: 1 mã lỗi (CSV bất thường, dữ liệu
+            # thiếu cột "item"...) không được làm dừng cả script hay ảnh
+            # hưởng tới file .xlsx của các mã khác/đã ghi trước đó.
+            print(f"  LỖI khi xử lý {symbol}: {e} -> bỏ qua mã này, giữ nguyên file cũ.")
+            failed_symbols.append(symbol)
+
+    if failed_symbols:
+        print(f"\nCác mã lỗi, đã bỏ qua: {', '.join(failed_symbols)}")
 
     if not any_success:
         print("\nKhông gộp được dữ liệu cho bất kỳ mã nào.")

@@ -1,7 +1,19 @@
 """
-Lấy BÁO CÁO TÀI CHÍNH ĐẦY ĐỦ theo NĂM (Cân đối kế toán / Kết quả kinh doanh /
-Lưu chuyển tiền tệ) của một hoặc nhiều mã chứng khoán từ vnstock (nguồn VCI),
-xuất mỗi báo cáo ra 1 file CSV riêng, giữ nguyên toàn bộ khoản mục gốc.
+Lấy BÁO CÁO TÀI CHÍNH ĐẦY ĐỦ theo NĂM hoặc theo QUÝ (Cân đối kế toán / Kết
+quả kinh doanh / Lưu chuyển tiền tệ) của một hoặc nhiều mã chứng khoán từ
+vnstock (nguồn VCI), xuất mỗi báo cáo ra 1 file CSV riêng, giữ nguyên toàn
+bộ khoản mục gốc.
+
+Chạy:
+    python fetch_full_financials.py                         # mặc định mã HPG, period=year
+    python fetch_full_financials.py HPG                      # 1 mã, period=year
+    python fetch_full_financials.py HPG,TCB,FPT,PNJ           # nhiều mã, period=year
+    python fetch_full_financials.py HPG,TCB,FPT,PNJ quarter   # nhiều mã, period=quarter
+
+Khi period=quarter, cột dữ liệu trả về từ vnstock có dạng "2024-Q1",
+"2024-Q2"... (thay vì "2024" như period=year), và file CSV được đặt tên
+thêm hậu tố "_Q" (vd financials/HPG/HPG_Q_balance_sheet.csv) để không đè
+lên dữ liệu năm.
 """
 
 import sys
@@ -11,6 +23,12 @@ import pandas as pd
 
 DEFAULT_SYMBOLS = ["HPG"]
 OUTPUT_DIR = "financials"
+
+# period="year" -> giữ tên file như cũ (<MÃ>_<report>.csv).
+# period="quarter" -> thêm hậu tố "_Q" để không đè lên dữ liệu năm
+# (<MÃ>_Q_<report>.csv), dùng làm đầu vào cho merge_financials.py chạy
+# với cùng period="quarter" -> ra file <MÃ>_Q.xlsx riêng.
+PERIOD_FILE_SUFFIX = {"year": "", "quarter": "_Q"}
 
 # Community: 60 requests/phút khi dùng API key.
 # 5 giây/request giúp giới hạn tối đa khoảng 12 request/phút.
@@ -87,13 +105,13 @@ def _drop_unused_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _fetch_one_statement(finance, symbol: str, method_name: str) -> pd.DataFrame:
+def _fetch_one_statement(finance, symbol: str, method_name: str, period: str) -> pd.DataFrame:
     """Gọi một endpoint; nếu gặp rate limit thì chờ rồi tự retry."""
     method = getattr(finance, method_name)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            df = method(period="year", lang="en", dropna=False)
+            df = method(period=period, lang="en", dropna=False)
             if df is None or df.empty:
                 raise RuntimeError(f"{method_name}() trả về rỗng cho mã {symbol}.")
 
@@ -118,7 +136,7 @@ def _fetch_one_statement(finance, symbol: str, method_name: str) -> pd.DataFrame
             raise
 
 
-def fetch_symbol(symbol: str) -> dict:
+def fetch_symbol(symbol: str, period: str) -> dict:
     from vnstock import Finance
 
     finance = Finance(symbol=symbol, source="VCI")
@@ -126,8 +144,8 @@ def fetch_symbol(symbol: str) -> dict:
 
     for label, method_name in STATEMENTS.items():
         try:
-            print(f"  -> Đang lấy {label} cho {symbol}...")
-            results[label] = _fetch_one_statement(finance, symbol, method_name)
+            print(f"  -> Đang lấy {label} ({period}) cho {symbol}...")
+            results[label] = _fetch_one_statement(finance, symbol, method_name, period)
         except Exception as e:
             print(f"  LỖI khi lấy {label} cho {symbol}: {e}")
         finally:
@@ -144,15 +162,21 @@ def main():
     else:
         symbols = DEFAULT_SYMBOLS
 
+    period = sys.argv[2].strip().lower() if len(sys.argv) > 2 else "year"
+    if period not in PERIOD_FILE_SUFFIX:
+        print(f"Tham số period không hợp lệ: '{period}'. Chỉ chấp nhận 'year' hoặc 'quarter'.")
+        sys.exit(1)
+    file_suffix = PERIOD_FILE_SUFFIX[period]
+
     any_success = False
 
     for symbol in symbols:
-        print(f"\n=== Mã {symbol} ===")
+        print(f"\n=== Mã {symbol} ({period}) ===")
         out_dir = os.path.join(OUTPUT_DIR, symbol)
         os.makedirs(out_dir, exist_ok=True)
 
         try:
-            statements = fetch_symbol(symbol)
+            statements = fetch_symbol(symbol, period)
         except Exception as e:
             import traceback
             print(f"Lỗi khi khởi tạo/gọi API vnstock (VCI) cho {symbol}. Chi tiết lỗi: {e}")
@@ -164,7 +188,7 @@ def main():
             continue
 
         for label, df in statements.items():
-            out_path = os.path.join(out_dir, f"{symbol}_{label}.csv")
+            out_path = os.path.join(out_dir, f"{symbol}{file_suffix}_{label}.csv")
             df.to_csv(out_path, index=False, encoding="utf-8-sig")
             print(f"  Đã ghi {out_path}  (shape={df.shape})")
             any_success = True

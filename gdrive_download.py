@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Tải các file <MÃ>.xlsx từ thư mục Google Drive (GDRIVE_FOLDER_ID)
-về đúng vị trí financials/<MÃ>/<MÃ>.xlsx, để dùng làm bản NỀN cho
-merge_financials.py (giữ nguyên sheet do bạn tự tạo, vd "chi_so_tai_chinh",
-và giữ lịch sử dữ liệu nhiều năm đã có).
+Tải các file <MÃ>.xlsx (dữ liệu năm) VÀ <MÃ>_Q.xlsx (dữ liệu quý, nếu có)
+từ thư mục Google Drive (GDRIVE_FOLDER_ID) về đúng vị trí
+financials/<MÃ>/<MÃ>.xlsx và financials/<MÃ>/<MÃ>_Q.xlsx, để dùng làm bản
+NỀN cho merge_financials.py (giữ nguyên sheet do bạn tự tạo, vd
+"chi_so_tai_chinh", và giữ lịch sử dữ liệu đã có).
 
 Cấu trúc thư mục trên Google Drive (GDRIVE_FOLDER_ID là thư mục GỐC):
     <thư mục gốc>/
@@ -11,10 +12,14 @@ Cấu trúc thư mục trên Google Drive (GDRIVE_FOLDER_ID là thư mục GỐC
             FPT.xlsx
         HPG/
             HPG.xlsx
+        MWG/
+            MWG.xlsx
+            MWG_Q.xlsx        (tự tạo thêm nếu muốn theo dõi theo quý)
         ...
-Mỗi mã có 1 thư mục con cùng tên, bên trong chứa đúng 1 file
-<MÃ>.xlsx. Script này đệ quy vào từng thư mục con để tìm file
-tương ứng với mã đó.
+Mỗi mã có 1 thư mục con cùng tên; bên trong có thể chứa file <MÃ>.xlsx
+(năm) và/hoặc file <MÃ>_Q.xlsx (quý). File nào không có trên Drive thì
+được bỏ qua (không lỗi) — vd nếu chưa tạo <MÃ>_Q.xlsx cho mã nào thì
+script chỉ tải phần dữ liệu năm cho mã đó.
 
 Chạy TRƯỚC fetch_full_financials.py và merge_financials.py.
 
@@ -36,6 +41,9 @@ from gdrive_utils import (
 
 FINANCIALS_DIR = "financials"
 
+# "" -> file năm (<MÃ>.xlsx), "_Q" -> file quý (<MÃ>_Q.xlsx).
+FILE_SUFFIXES = ["", "_Q"]
+
 
 def main():
     wanted_symbols = None
@@ -56,24 +64,22 @@ def main():
         if wanted_symbols and symbol_upper not in wanted_symbols:
             continue
 
-        name = f"{symbol_upper}.xlsx"
         files_in_subfolder = list_xlsx_files(service, sub_folder_id)
 
-        file_id = files_in_subfolder.get(name)
-        if file_id is None:
-            # Dự phòng: thư mục con có thể chỉ chứa đúng 1 file .xlsx
-            # nhưng đặt tên không khớp tuyệt đối "<MÃ>.xlsx".
-            if len(files_in_subfolder) == 1:
-                only_name, file_id = next(iter(files_in_subfolder.items()))
-                print(f"  CẢNH BÁO: thư mục '{symbol}' không có file '{name}', dùng tạm '{only_name}'.")
-            else:
-                print(f"  Bỏ qua '{symbol}': không tìm thấy '{name}' trong thư mục con.")
+        found_any = False
+        for suffix in FILE_SUFFIXES:
+            name = f"{symbol_upper}{suffix}.xlsx"
+            file_id = files_in_subfolder.get(name)
+            if file_id is None:
                 continue
+            found_any = True
+            dest_path = os.path.join(FINANCIALS_DIR, symbol_upper, name)
+            print(f"  Tải {symbol}/{name} (Drive id={file_id}) -> {dest_path}")
+            download_file(service, file_id, dest_path)
+            downloaded += 1
 
-        dest_path = os.path.join(FINANCIALS_DIR, symbol_upper, name)
-        print(f"  Tải {symbol}/{name} (Drive id={file_id}) -> {dest_path}")
-        download_file(service, file_id, dest_path)
-        downloaded += 1
+        if not found_any:
+            print(f"  Bỏ qua '{symbol}': không tìm thấy file .xlsx nào trong thư mục con.")
 
     print(f"Hoàn tất: đã tải {downloaded} file từ Google Drive.")
 

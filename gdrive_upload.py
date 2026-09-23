@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Đẩy các file financials/<MÃ>/<MÃ>.xlsx (đã được
+Đẩy các file financials/<MÃ>/<MÃ>.xlsx (dữ liệu năm) và
+financials/<MÃ>/<MÃ>_Q.xlsx (dữ liệu quý, nếu có) — đã được
 merge_financials.py cập nhật 3 sheet báo cáo, giữ nguyên sheet chỉ số tự
-tạo) lên lại thư mục Google Drive (GDRIVE_FOLDER_ID). Nếu file cùng tên đã
+tạo — lên lại thư mục Google Drive (GDRIVE_FOLDER_ID). Nếu file cùng tên đã
 tồn tại trên Drive -> ghi đè nội dung (giữ nguyên file, giữ nguyên link
 chia sẻ cũ). Nếu chưa có -> tạo mới.
 
@@ -12,10 +13,13 @@ Cấu trúc thư mục trên Google Drive (GDRIVE_FOLDER_ID là thư mục GỐC
             FPT.xlsx
         HPG/
             HPG.xlsx
+        MWG/
+            MWG.xlsx
+            MWG_Q.xlsx        (nếu cục bộ có file quý cho mã này)
         ...
 Với mỗi mã, script tìm (hoặc tạo mới nếu chưa có) thư mục con cùng tên mã
-ngay trong thư mục gốc, rồi upload/ghi đè file <MÃ>.xlsx vào
-đúng thư mục con đó.
+ngay trong thư mục gốc, rồi upload/ghi đè file <MÃ>.xlsx và/hoặc
+<MÃ>_Q.xlsx (tuỳ file nào tồn tại cục bộ) vào đúng thư mục con đó.
 
 Chạy SAU merge_financials.py.
 
@@ -38,6 +42,9 @@ from gdrive_utils import (
 
 FINANCIALS_DIR = "financials"
 
+# "" -> file năm (<MÃ>.xlsx), "_Q" -> file quý (<MÃ>_Q.xlsx).
+FILE_SUFFIXES = ["", "_Q"]
+
 
 def main():
     if len(sys.argv) > 1:
@@ -58,10 +65,13 @@ def main():
 
     uploaded = 0
     for symbol in symbols:
-        name = f"{symbol}.xlsx"
-        local_path = os.path.join(FINANCIALS_DIR, symbol, name)
-        if not os.path.exists(local_path):
-            print(f"  Bỏ qua {symbol}: không thấy {local_path}")
+        local_paths = {
+            suffix: os.path.join(FINANCIALS_DIR, symbol, f"{symbol}{suffix}.xlsx")
+            for suffix in FILE_SUFFIXES
+        }
+        existing_local = {s: p for s, p in local_paths.items() if os.path.exists(p)}
+        if not existing_local:
+            print(f"  Bỏ qua {symbol}: không thấy file .xlsx nào trong financials/{symbol}/")
             continue
 
         sub_folder_id = get_or_create_subfolder(
@@ -69,11 +79,13 @@ def main():
         )
         existing_files = list_xlsx_files(service, sub_folder_id)
 
-        file_id, action = upload_or_replace_file(
-            service, sub_folder_id, existing_files, local_path, name
-        )
-        print(f"  {action.upper()} {symbol}/{name} (Drive id={file_id})")
-        uploaded += 1
+        for suffix, local_path in existing_local.items():
+            name = f"{symbol}{suffix}.xlsx"
+            file_id, action = upload_or_replace_file(
+                service, sub_folder_id, existing_files, local_path, name
+            )
+            print(f"  {action.upper()} {symbol}/{name} (Drive id={file_id})")
+            uploaded += 1
 
     print(f"Hoàn tất: đã upload {uploaded} file lên Google Drive.")
 
