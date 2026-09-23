@@ -15,8 +15,14 @@ về vài năm gần nhất mỗi lần fetch):
     - Nếu file Excel chưa tồn tại (lần chạy đầu tiên) -> dùng toàn bộ CSV
       hiện tại làm dữ liệu nền ban đầu.
 
-Nếu file Excel đã có thêm sheet khác (vd "financial_ratios" tự thêm sau
-này), sheet đó được giữ nguyên, không bị đụng tới.
+Nếu file Excel đã có thêm sheet khác (vd "chi_so_tai_chinh" tự thêm sau
+này, có thể chứa công thức link tới workbook khác), sheet đó được giữ
+nguyên 100%, không bị đụng tới: cách làm là MỞ THẲNG workbook cũ bằng
+openpyxl rồi chỉ xoá/ghi lại đúng 3 sheet báo cáo TRONG CHÍNH workbook đó,
+không tạo workbook mới rồi chép nội dung các sheet khác sang (cách chép
+thủ công từng phần dễ bỏ sót các thứ nằm ở cấp WORKBOOK chứ không phải cấp
+sheet - ví dụ external links khi 1 công thức tham chiếu sang file Excel
+khác - làm Excel báo lỗi "unreadable content" dù openpyxl vẫn đọc được).
 
 Hỗ trợ cả 2 kỳ báo cáo, chạy độc lập, ra 2 file Excel riêng biệt cho mỗi mã:
     - period=year (mặc định)  -> đọc CSV "<MÃ>_<report>.csv"      -> ghi "<MÃ>.xlsx"
@@ -34,8 +40,6 @@ Chạy:
 
 import sys
 import os
-import copy
-import shutil
 import tempfile
 import pandas as pd
 import openpyxl
@@ -116,6 +120,15 @@ def merge_sheet(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def _write_dataframe(ws, df: pd.DataFrame) -> None:
+    """Ghi DataFrame vào worksheet openpyxl trống (tương đương df.to_excel
+    nhưng thao tác trực tiếp trên 1 sheet của workbook đang mở, không qua
+    pandas ExcelWriter/workbook riêng). NaN/NA -> ô trống (giống to_excel)."""
+    ws.append(list(df.columns))
+    for row in df.itertuples(index=False):
+        ws.append([None if pd.isna(v) else v for v in row])
+
+
 def _autofit_number_column_width(ws, col_idx, min_width=10, max_width=24, padding=2):
     """Tính độ rộng vừa đủ cho 1 cột SỐ (năm) dựa trên nội dung thực tế
     (số đã format dấu phân cách nghìn), để không cần mở file chỉnh tay."""
@@ -134,9 +147,9 @@ def _autofit_number_column_width(ws, col_idx, min_width=10, max_width=24, paddin
 
 def _format_statement_sheet(ws) -> None:
     """Định dạng chuẩn cho 1 sheet báo cáo (balance_sheet/income_statement/
-    cash_flow) vừa được pandas ghi ra: font Tahoma, dòng tiêu đề (năm) in
-    đậm/nền màu, số có dấu phân cách nghìn, cố định dòng 1 + cột A, viền
-    mảnh cho toàn vùng dữ liệu.
+    cash_flow) vừa được ghi: font Tahoma, dòng tiêu đề (năm) in đậm/nền
+    màu, số có dấu phân cách nghìn, cố định dòng 1 + cột A, viền mảnh cho
+    toàn vùng dữ liệu.
     Độ rộng cột: cột A (khoản mục) giữ cố định vì tên khoản mục dài, không
     autofit theo nội dung (sẽ ra cột quá rộng); các cột năm (số) thì autofit
     theo nội dung thực tế để hiển thị đủ luôn, không cần mở file chỉnh tay."""
@@ -172,15 +185,12 @@ def process_symbol(symbol: str, file_suffix: str = "") -> bool:
         print(f"  Bỏ qua {symbol}: không tìm thấy thư mục {sym_dir}")
         return False
 
-    # Chỉ đọc bằng pandas 3 sheet báo cáo gốc (dữ liệu thuần, không công thức).
-    # KHÔNG dùng pd.read_excel cho toàn bộ workbook: pandas chỉ đọc được giá
-    # trị đã tính sẵn (cached value) của ô công thức chứ không đọc được công
-    # thức, nên nếu nạp rồi ghi lại các sheet khác (vd "chi_so_tai_chinh")
-    # qua pandas thì mọi công thức trong đó sẽ bị "phẳng hoá" thành số tĩnh.
-    # Các sheet ngoài 3 sheet báo cáo được giữ nguyên 100% (kể cả công thức,
-    # định dạng) bằng cách copy trực tiếp qua openpyxl ở bước bên dưới.
+    # Chỉ đọc bằng pandas 3 sheet báo cáo gốc (dữ liệu thuần, không công
+    # thức) để lấy dữ liệu NỀN cho merge_sheet(). Việc GHI thì làm trực
+    # tiếp trên workbook openpyxl mở từ out_path (xem bên dưới) chứ không
+    # dùng pandas ExcelWriter, để các sheet/thứ khác (external links, named
+    # ranges, comment, v.v.) không hề bị workbook mới "quên" mất.
     existing_sheets = {}
-    other_sheet_names = []
     if os.path.exists(out_path):
         try:
             existing_sheets = pd.read_excel(
@@ -188,26 +198,9 @@ def process_symbol(symbol: str, file_suffix: str = "") -> bool:
         except Exception as e:
             print(f"  CẢNH BÁO: không đọc được file Excel cũ {out_path} ({e}) -> tạo mới.")
             existing_sheets = {}
-        try:
-            other_sheet_names = [
-                s for s in openpyxl.load_workbook(out_path, read_only=True).sheetnames
-                if s not in STATEMENT_SHEETS
-            ]
-        except Exception:
-            other_sheet_names = []
 
-    backup_path = out_path + ".bak_other_sheets.xlsx"
     tmp_path = None
-
-    # Toàn bộ phần còn lại (đọc CSV, merge, ghi file) nằm trong try/finally
-    # để bảo đảm 2 file phụ (backup_path, tmp_path) LUÔN được dọn dẹp dù lỗi
-    # xảy ra ở bất kỳ bước nào (kể cả trước khi tmp_path được tạo) -> không
-    # để sót file rác, và out_path thật không bao giờ bị đụng tới cho tới
-    # khi mọi bước phía trên đã thành công.
     try:
-        if other_sheet_names and os.path.exists(out_path):
-            shutil.copyfile(out_path, backup_path)
-
         output_sheets = {}
         any_written = False
 
@@ -228,90 +221,61 @@ def process_symbol(symbol: str, file_suffix: str = "") -> bool:
 
         ordered_names = [n for n in STATEMENT_SHEETS if n in output_sheets]
 
-        # Ghi an toàn (atomic write): ghi ra file tạm CÙNG THƯ MỤC với
-        # out_path (đảm bảo os.replace ở cuối là atomic, cùng filesystem),
-        # chỉ thay thế file thật sau khi mọi bước (ghi 3 sheet + copy sheet
-        # khác) đã thành công. Nếu có lỗi giữa chừng (dữ liệu bất thường,
-        # tiến trình bị ngắt...) file thật out_path không hề bị đụng tới ->
-        # không bao giờ bị hỏng/dở dang.
+        # Mở NGUYÊN workbook cũ (nếu có) bằng openpyxl - giữ nguyên 100%
+        # mọi thứ (sheet khác, công thức, external links, named ranges,
+        # conditional formatting, comment...) vì chưa hề đụng tới. Nếu chưa
+        # có file cũ hoặc file cũ đọc lỗi -> tạo workbook mới trống.
+        wb = None
+        if os.path.exists(out_path):
+            try:
+                wb = openpyxl.load_workbook(out_path)
+            except Exception as e:
+                print(f"  CẢNH BÁO: không mở được workbook cũ {out_path} bằng openpyxl "
+                      f"({e}) -> tạo workbook mới (CÁC SHEET TỰ TẠO KHÁC SẼ MẤT).")
+                wb = None
+        is_new_wb = wb is None
+        if wb is None:
+            wb = openpyxl.Workbook()
+
+        # Ghi lại đúng 3 sheet báo cáo: nếu đã tồn tại -> xoá rồi tạo lại
+        # ĐÚNG VỊ TRÍ CŨ (giữ nguyên thứ tự sheet); nếu chưa có -> thêm mới
+        # theo đúng thứ tự STATEMENT_SHEETS.
+        for name in ordered_names:
+            if name in wb.sheetnames:
+                idx = wb.sheetnames.index(name)
+                del wb[name]
+                ws = wb.create_sheet(name, idx)
+            else:
+                ws = wb.create_sheet(name)
+            _write_dataframe(ws, output_sheets[name])
+            _format_statement_sheet(ws)
+
+        # Xoá sheet mặc định "Sheet" nếu là workbook mới tạo trống.
+        if is_new_wb and "Sheet" in wb.sheetnames and "Sheet" not in ordered_names:
+            del wb["Sheet"]
+
+        # Đảm bảo 3 sheet báo cáo luôn đứng đầu, đúng thứ tự cố định; các
+        # sheet khác (tự tạo, vd "chi_so_tai_chinh") theo sau, giữ nguyên
+        # thứ tự tương đối cũ của chúng.
+        desired_order = list(ordered_names) + [n for n in wb.sheetnames if n not in ordered_names]
+        wb._sheets = [wb[n] for n in desired_order]
+
+        # Ghi an toàn (atomic write): lưu ra file tạm CÙNG THƯ MỤC với
+        # out_path rồi mới os.replace ở bước cuối (atomic, cùng
+        # filesystem). Nếu có lỗi giữa chừng, out_path thật không hề bị
+        # đụng tới -> không bao giờ bị hỏng/dở dang.
         tmp_fd, tmp_path = tempfile.mkstemp(
             suffix=".xlsx", prefix=f".{symbol}{file_suffix}_", dir=sym_dir)
         os.close(tmp_fd)
-
-        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
-            for name in ordered_names:
-                output_sheets[name].to_excel(writer, sheet_name=name, index=False)
-                _format_statement_sheet(writer.sheets[name])
-
-        # Copy nguyên trạng (công thức + định dạng) các sheet khác từ file cũ
-        # (vd "chi_so_tai_chinh") sang file TẠM vừa ghi ở trên (không đụng
-        # tới out_path thật cho tới khi mọi thứ xong xuôi).
-        final_order = list(ordered_names)
-        if other_sheet_names:
-            _copy_other_sheets(tmp_path, backup_path, other_sheet_names)
-            final_order += other_sheet_names
-
-        os.replace(tmp_path, out_path)  # atomic, chỉ 1 bước "chuyển giao" cuối cùng
+        wb.save(tmp_path)
+        os.replace(tmp_path, out_path)
         tmp_path = None  # đã đổi tên thành out_path, không còn để dọn dẹp
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
 
-    print(f"  Đã ghi {out_path}  (sheets: {', '.join(final_order)})")
+    print(f"  Đã ghi {out_path}  (sheets: {', '.join(desired_order)})")
     return True
-
-
-def _copy_other_sheets(out_path, backup_path, sheet_names):
-    """Copy NGUYÊN TRẠNG (giá trị, công thức, style, độ rộng cột/dòng, ô
-    merge, freeze panes, Conditional Formatting, Comment, Data Validation,
-    Hyperlink) các sheet có tên trong `sheet_names` từ BẢN CŨ (backup tạm
-    lấy trước khi pandas ghi đè) sang file `out_path` vừa được pandas ghi
-    lại (chỉ chứa 3 sheet báo cáo). Đây là các sheet do người dùng tự tạo
-    (vd sheet chỉ số tài chính tự nhập công thức) -> không được đụng tới,
-    kể cả các phần định dạng nâng cao mà trước đây (bản cũ) từng bị bỏ sót
-    khi copy (conditional formatting/comment/data validation/hyperlink)."""
-    if not os.path.exists(backup_path):
-        return
-    src_wb = openpyxl.load_workbook(backup_path, data_only=False)
-    dst_wb = openpyxl.load_workbook(out_path)
-    for name in sheet_names:
-        if name not in src_wb.sheetnames:
-            continue
-        src_ws = src_wb[name]
-        dst_ws = dst_wb.create_sheet(name)
-        dst_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
-        for col, dim in src_ws.column_dimensions.items():
-            dst_ws.column_dimensions[col].width = dim.width
-        for row_dim_idx, row_dim in src_ws.row_dimensions.items():
-            if row_dim.height:
-                dst_ws.row_dimensions[row_dim_idx].height = row_dim.height
-        for merged_range in src_ws.merged_cells.ranges:
-            dst_ws.merge_cells(str(merged_range))
-        for row in src_ws.iter_rows():
-            for cell in row:
-                new_cell = dst_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                if cell.has_style:
-                    new_cell.font = cell.font.copy()
-                    new_cell.fill = cell.fill.copy()
-                    new_cell.border = cell.border.copy()
-                    new_cell.alignment = cell.alignment.copy()
-                    new_cell.number_format = cell.number_format
-                if cell.comment:
-                    new_cell.comment = copy.copy(cell.comment)
-                if cell.hyperlink:
-                    new_cell.hyperlink = copy.copy(cell.hyperlink)
-        if src_ws.freeze_panes:
-            dst_ws.freeze_panes = src_ws.freeze_panes
-        # Conditional Formatting (vd tô màu theo ngưỡng giá trị đặt trong Excel).
-        for cf in src_ws.conditional_formatting:
-            for rule in cf.rules:
-                dst_ws.conditional_formatting.add(str(cf.sqref), copy.copy(rule))
-        # Data Validation (vd dropdown list, ràng buộc nhập liệu).
-        for dv in src_ws.data_validations.dataValidation:
-            dst_ws.add_data_validation(copy.copy(dv))
-    dst_wb.save(out_path)
 
 
 def main():
