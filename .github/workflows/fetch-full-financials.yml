@@ -8,6 +8,11 @@ on:
         description: "Mã chứng khoán, cách nhau bởi dấu phẩy (vd HPG,TCB,FPT)"
         required: false
         default: "HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX"
+      fetch_quarter:
+        description: "Có lấy thêm dữ liệu theo QUÝ không (tạo/cập nhật <MÃ>_Q.xlsx)"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: write
@@ -36,19 +41,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Tải file Excel "chuẩn" (đã có sheet chỉ số tự tạo) từ Google Drive về
+      - name: Tải file Excel "chuẩn" (năm + quý, đã có sheet chỉ số tự tạo) từ Google Drive về
         run: python gdrive_download.py
 
-      - name: Run fetch script
-        run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}"
+      - name: Run fetch script (theo NĂM)
+        run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" year
 
-      - name: Merge CSV -> Excel (3 sheet/mã, giữ lại lịch sử nhiều năm)
-        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,FRT,TCX' }}"
+      - name: Merge CSV -> Excel theo NĂM (3 sheet/mã, giữ lại lịch sử nhiều năm)
+        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" year
+
+      - name: Run fetch script (theo QUÝ)
+        if: ${{ github.event.inputs.fetch_quarter != 'false' }}
+        run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" quarter
+
+      - name: Merge CSV -> Excel theo QUÝ (ra <MÃ>_Q.xlsx riêng, giữ lại lịch sử nhiều quý)
+        if: ${{ github.event.inputs.fetch_quarter != 'false' }}
+        run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" quarter
 
       - name: Xoá CSV tạm (chỉ giữ lại file Excel)
         run: find financials -name "*.csv" -delete
 
-      - name: Đẩy file Excel đã cập nhật lên lại Google Drive
+      - name: Đẩy file Excel đã cập nhật (năm + quý) lên lại Google Drive
         run: python gdrive_upload.py
 
       - name: Upload Excel as artifact
