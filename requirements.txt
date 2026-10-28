@@ -1,5 +1,23 @@
-vnstock>=3.5.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
+
+# --- Dependencies của vnstock (cài thủ công thay vì để pip tự kéo) ---
+# `vnstock` VÀ `vnai` đang bị PyPI "quarantined" (~09/2026) -> pip không cài
+# được qua PyPI. Workaround (giống repo P):
+#   - `vnai` thay bằng stub nội bộ ở vendor/vnai_stub (chỉ cần để import).
+#   - `vnstock` cài thẳng từ GitHub với --no-deps (xem bước trong workflow).
+#   - Các dependency thật còn lại của vnstock liệt kê dưới đây.
+# Khi PyPI gỡ quarantine: xoá 2 bước workaround trong workflow và trả
+# `vnstock>=3.5.0` về lại file này.
+requests
+numpy
+beautifulsoup4
+pydantic
+psutil
+fake_useragent
+packaging>=20.0
+importlib-metadata>=1.0
+tenacity
+pytz
