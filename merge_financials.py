@@ -6,14 +6,24 @@ với 3 sheet cùng tên.
 Cách gộp dữ liệu qua thời gian (để không mất các năm cũ khi vnstock chỉ trả
 về vài năm gần nhất mỗi lần fetch):
     - Dữ liệu mới được đối chiếu với dữ liệu cũ đã có trong file Excel theo
-      cột "item" (tên khoản mục).
-    - Nếu "item" TRÙNG KHỚP với 1 dòng đã có -> merge các cột năm mới vào
-      dòng đó (đè giá trị nếu năm đã tồn tại, thêm cột nếu là năm mới) ->
-      qua nhiều lần chạy sẽ tích luỹ dữ liệu nhiều năm.
-    - Nếu "item" KHÔNG TRÙNG KHỚP (khoản mục hoàn toàn mới, chưa từng có
-      trong dữ liệu cũ) -> KHÔNG merge dòng đó, dữ liệu cũ giữ nguyên.
+      cột "item" (tên khoản mục). Khi so khớp, KHÔNG phân biệt hoa/thường và
+      bỏ qua khoảng trắng thừa; mọi khác biệt khác đều coi là KHÔNG khớp.
+    - Nếu "item" KHỚP với 1 dòng đã có -> merge các cột năm mới vào dòng đó
+      (đè giá trị nếu năm đã tồn tại, thêm cột nếu là năm mới). Giá trị mới
+      rỗng (NaN) không đè lên số cũ.
+    - Nếu "item" KHÔNG KHỚP -> thêm nguyên dòng đó từ dữ liệu mới thành 1
+      dòng MỚI ở CUỐI sheet (không chèn giữa để không làm lệch địa chỉ ô mà
+      các sheet công thức tự tạo đang tham chiếu). Dòng cũ giữ nguyên. Script
+      in cảnh báo kèm gợi ý "có thể là đổi tên của ..." để đối chiếu thủ công.
+    - Tên khoản mục trùng nhau trong cùng 1 báo cáo được ghép theo thứ tự
+      xuất hiện (dòng trùng thứ n bên mới ghép với dòng trùng thứ n bên cũ).
     - Nếu file Excel chưa tồn tại (lần chạy đầu tiên) -> dùng toàn bộ CSV
       hiện tại làm dữ liệu nền ban đầu.
+
+Chỉ ghi lại file Excel của 1 mã khi dữ liệu thực sự thay đổi. Mã không có gì
+mới thì file giữ nguyên và không cần upload lên Google Drive. Danh sách mã có
+thay đổi được ghi vào $GITHUB_OUTPUT (changed=HPG,TCB) để workflow quyết định
+có upload hay không; cảnh báo/tóm tắt ghi vào $GITHUB_STEP_SUMMARY.
 
 Nếu file Excel đã có thêm sheet khác (vd "financial_ratios" tự thêm sau
 này), sheet đó được giữ nguyên, không bị đụng tới.
@@ -27,7 +37,9 @@ Chạy:
 import sys
 import os
 import copy
+import difflib
 import shutil
+import numpy as np
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -48,6 +60,9 @@ STATEMENT_SHEETS = {
 }
 
 DROP_COLUMNS = ["item_en", "item_id"]
+
+# Số dòng tối đa in ra / ghi vào summary cho mỗi danh sách cảnh báo.
+MAX_LISTED = 30
 
 
 def _load_csv(path: str) -> pd.DataFrame:
@@ -71,36 +86,173 @@ def _sort_year_columns(cols):
     return sorted(cols, key=key)
 
 
-def merge_sheet(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge new_df vào old_df theo cột 'item'. Xem quy tắc merge ở đầu file."""
+def _norm_item(value) -> str:
+    """Khoá so khớp tên khoản mục: không phân biệt hoa/thường, gộp khoảng
+    trắng thừa (kể cả NBSP). Mọi khác biệt khác đều là KHÔNG khớp."""
+    return " ".join(str(value).replace("\xa0", " ").split()).casefold()
+
+
+def _keys_with_occurrence(items):
+    """Gán cho mỗi dòng khoá (tên chuẩn hoá, lần xuất hiện thứ k) để các
+    khoản mục trùng tên trong cùng 1 báo cáo ghép được theo thứ tự thay vì
+    cùng đè lên 1 dòng."""
+    counter = {}
+    keys = []
+    for v in items:
+        n = _norm_item(v)
+        k = counter.get(n, 0)
+        counter[n] = k + 1
+        keys.append((n, k))
+    return keys
+
+
+def merge_sheet(old_df: pd.DataFrame, new_df: pd.DataFrame):
+    """Merge new_df vào old_df theo cột 'item'. Xem quy tắc ở đầu file.
+
+    Trả về (merged_df, info) với info = {
+        "appended": [(tên khoản mục mới không khớp, gợi ý tên cũ hoặc None)],
+        "orphans":  [tên khoản mục cũ không xuất hiện trong dữ liệu mới],
+    }"""
+    info = {"appended": [], "orphans": []}
+
+    new_df = new_df.copy()
+    new_df.columns = [str(c) for c in new_df.columns]
+    year_cols_new = [c for c in new_df.columns if c != "item"]
+
     if old_df is None or old_df.empty:
         # Chưa có dữ liệu cũ -> dùng dữ liệu mới làm nền.
         merged = new_df.copy()
     else:
-        merged = old_df.copy()
-        year_cols_new = [c for c in new_df.columns if c != "item"]
+        merged = old_df.copy().reset_index(drop=True)
+        merged.columns = [str(c) for c in merged.columns]
 
-        # Đảm bảo các cột năm mới tồn tại trong merged (dù chưa có dòng nào khớp).
+        # Đảm bảo các cột năm mới tồn tại trong merged.
         for yc in year_cols_new:
             if yc not in merged.columns:
-                merged[yc] = pd.NA
+                merged[yc] = np.nan
 
-        item_to_index = {}
-        for idx, item_val in merged["item"].items():
-            item_to_index.setdefault(item_val, idx)
+        old_keys = _keys_with_occurrence(merged["item"])
+        key_to_index = {}
+        for i, k in enumerate(old_keys):
+            key_to_index.setdefault(k, i)
 
-        for _, row in new_df.iterrows():
-            item_val = row["item"]
-            if item_val not in item_to_index:
-                # Không trùng khớp -> bỏ qua, không merge, giữ nguyên dữ liệu cũ.
+        matched = set()
+        unmatched_rows = []
+        new_keys = _keys_with_occurrence(new_df["item"])
+        for key, (_, row) in zip(new_keys, new_df.iterrows()):
+            old_idx = key_to_index.get(key)
+            if old_idx is None:
+                unmatched_rows.append(row)
                 continue
-            old_idx = item_to_index[item_val]
+            matched.add(old_idx)
             for yc in year_cols_new:
-                merged.loc[old_idx, yc] = row[yc]
+                val = row[yc]
+                if pd.isna(val):
+                    continue  # không đè số cũ bằng giá trị rỗng
+                merged.loc[old_idx, yc] = val
+
+        # Khoản mục cũ không còn xuất hiện trong dữ liệu mới.
+        orphan_items = [
+            str(merged["item"].iloc[i]) for i in range(len(old_keys)) if i not in matched
+        ]
+        info["orphans"] = orphan_items
+        lookup = {o.casefold(): o for o in orphan_items}
+
+        # Không khớp -> thêm nguyên dòng mới xuống CUỐI sheet.
+        if unmatched_rows:
+            for row in unmatched_rows:
+                name = str(row["item"])
+                guess = difflib.get_close_matches(name.casefold(), list(lookup), n=1, cutoff=0.6)
+                info["appended"].append((name, lookup[guess[0]] if guess else None))
+            add_df = pd.DataFrame(unmatched_rows).reindex(columns=merged.columns)
+            merged = pd.concat([merged, add_df], ignore_index=True)
 
     year_cols = _sort_year_columns([c for c in merged.columns if c != "item"])
     merged = merged[["item"] + year_cols]
-    return merged
+    return merged, info
+
+
+def _frames_same(old_df, new_df) -> bool:
+    """True nếu merged (new_df) không khác gì dữ liệu cũ (old_df): cùng cột,
+    cùng danh sách khoản mục theo thứ tự, giá trị số bằng nhau (có dung sai)."""
+    if old_df is None:
+        return False
+    a = old_df.reset_index(drop=True).copy()
+    b = new_df.reset_index(drop=True).copy()
+    a.columns = [str(c) for c in a.columns]
+    b.columns = [str(c) for c in b.columns]
+    if list(a.columns) != list(b.columns) or len(a) != len(b):
+        return False
+    if not (a["item"].astype(str) == b["item"].astype(str)).all():
+        return False
+    for c in a.columns:
+        if c == "item":
+            continue
+        x = pd.to_numeric(a[c], errors="coerce").to_numpy(dtype=float)
+        y = pd.to_numeric(b[c], errors="coerce").to_numpy(dtype=float)
+        if not np.allclose(x, y, rtol=1e-9, atol=1e-6, equal_nan=True):
+            return False
+    return True
+
+
+def _report_mismatch(symbol: str, sheet_info: dict) -> None:
+    """In cảnh báo khoản mục không khớp tên (hiện thành annotation trên GitHub Actions)."""
+    for sheet, info in sheet_info.items():
+        appended = info["appended"]
+        orphans = info["orphans"]
+        if appended:
+            print(
+                f"::warning::{symbol}/{sheet}: {len(appended)} khoản mục KHÔNG khớp tên với "
+                f"dữ liệu cũ -> đã thêm thành dòng mới ở cuối sheet, cần đối chiếu thủ công"
+            )
+            for name, guess in appended[:MAX_LISTED]:
+                hint = f"  (có thể là đổi tên của: {guess})" if guess else ""
+                print(f"    + {name}{hint}")
+            if len(appended) > MAX_LISTED:
+                print(f"    ... và {len(appended) - MAX_LISTED} khoản mục khác")
+        if orphans:
+            print(f"  [{symbol}/{sheet}] {len(orphans)} khoản mục cũ không có trong dữ liệu mới:")
+            for name in orphans[:MAX_LISTED]:
+                print(f"    - {name}")
+            if len(orphans) > MAX_LISTED:
+                print(f"    ... và {len(orphans) - MAX_LISTED} khoản mục khác")
+
+
+def _write_github_outputs(changed, unchanged, report) -> None:
+    """Ghi output cho workflow (changed=...) và tóm tắt hiển thị trên tab Actions."""
+    out_path = os.environ.get("GITHUB_OUTPUT")
+    if out_path:
+        with open(out_path, "a", encoding="utf-8") as f:
+            f.write(f"changed={','.join(changed)}\n")
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    lines = ["## Kết quả gộp BCTC", ""]
+    if changed:
+        lines.append(f"- Có cập nhật (sẽ upload Google Drive): **{', '.join(changed)}**")
+    if unchanged:
+        lines.append(f"- Không có dữ liệu mới: {', '.join(unchanged)}")
+    if not changed:
+        lines += ["", "**Không có nội dung cập nhật -> bỏ qua upload Google Drive.**"]
+
+    mismatch_lines = []
+    for symbol, sheet_info in report.items():
+        for sheet, info in sheet_info.items():
+            for name, guess in info["appended"][:MAX_LISTED]:
+                hint = f" — có thể là đổi tên của `{guess}`" if guess else ""
+                mismatch_lines.append(f"- `{symbol}/{sheet}`: `{name}`{hint}")
+    if mismatch_lines:
+        lines += [
+            "",
+            "### Khoản mục không khớp tên",
+            "Đã thêm thành dòng mới ở cuối sheet, cần đối chiếu thủ công:",
+            *mismatch_lines,
+        ]
+
+    with open(summary_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _autofit_number_column_width(ws, col_idx, min_width=10, max_width=24, padding=2):
@@ -151,13 +303,15 @@ def _format_statement_sheet(ws) -> None:
     ws.freeze_panes = "B2"
 
 
-def process_symbol(symbol: str) -> bool:
+def process_symbol(symbol: str, report: dict) -> str:
+    """Xử lý 1 mã. Trả về 'changed' (đã ghi file mới), 'unchanged' (không có
+    dữ liệu mới, không ghi file) hoặc 'skipped' (không xử lý được)."""
     sym_dir = os.path.join(FINANCIALS_DIR, symbol)
     out_path = os.path.join(sym_dir, f"{symbol}.xlsx")
 
     if not os.path.isdir(sym_dir):
         print(f"  Bỏ qua {symbol}: không tìm thấy thư mục {sym_dir}")
-        return False
+        return "skipped"
 
     # Chỉ đọc bằng pandas 3 sheet báo cáo gốc (dữ liệu thuần, không công thức).
     # KHÔNG dùng pd.read_excel cho toàn bộ workbook: pandas chỉ đọc được giá
@@ -183,27 +337,40 @@ def process_symbol(symbol: str) -> bool:
         except Exception:
             other_sheet_names = []
 
-    backup_path = out_path + ".bak_other_sheets.xlsx"
-    if other_sheet_names and os.path.exists(out_path):
-        shutil.copyfile(out_path, backup_path)
-
     output_sheets = {}
-    any_written = False
+    sheet_info = {}
+    changed = not os.path.exists(out_path)  # chưa có file -> coi là có thay đổi
 
     for sheet_name, suffix in STATEMENT_SHEETS.items():
         csv_path = os.path.join(sym_dir, f"{symbol}_{suffix}.csv")
+        old_df = existing_sheets.get(sheet_name)
         if not os.path.exists(csv_path):
             print(f"  Bỏ qua sheet '{sheet_name}': không tìm thấy {csv_path}")
+            if old_df is not None:
+                output_sheets[sheet_name] = old_df  # giữ nguyên sheet cũ, không làm mất
             continue
 
         new_df = _load_csv(csv_path)
-        old_df = existing_sheets.get(sheet_name)
-        output_sheets[sheet_name] = merge_sheet(old_df, new_df)
-        any_written = True
+        merged, info = merge_sheet(old_df, new_df)
+        output_sheets[sheet_name] = merged
+        sheet_info[sheet_name] = info
+        if not _frames_same(old_df, merged):
+            changed = True
 
-    if not any_written:
+    if not sheet_info:
         print(f"  Không có CSV nào cho {symbol}, bỏ qua.")
-        return False
+        return "skipped"
+
+    report[symbol] = sheet_info
+    _report_mismatch(symbol, sheet_info)
+
+    if not changed:
+        print(f"  Không có dữ liệu mới cho {symbol} -> giữ nguyên file, không cần upload.")
+        return "unchanged"
+
+    backup_path = out_path + ".bak_other_sheets.xlsx"
+    if other_sheet_names and os.path.exists(out_path):
+        shutil.copyfile(out_path, backup_path)
 
     ordered_names = [n for n in STATEMENT_SHEETS if n in output_sheets]
 
@@ -220,7 +387,7 @@ def process_symbol(symbol: str) -> bool:
         final_order += other_sheet_names
 
     print(f"  Đã ghi {out_path}  (sheets: {', '.join(final_order)})")
-    return True
+    return "changed"
 
 
 def _copy_other_sheets(out_path, sheet_names):
@@ -289,20 +456,33 @@ def main():
         else:
             symbols = []
 
+    symbols = list(dict.fromkeys(symbols))  # bỏ mã trùng, giữ thứ tự
+
     if not symbols:
         print(f"Không tìm thấy mã nào trong '{FINANCIALS_DIR}/'.")
         sys.exit(1)
 
-    any_success = False
+    changed_symbols = []
+    unchanged_symbols = []
+    report = {}
     for symbol in symbols:
         print(f"\n=== Mã {symbol} ===")
-        if process_symbol(symbol):
-            any_success = True
+        status = process_symbol(symbol, report)
+        if status == "changed":
+            changed_symbols.append(symbol)
+        elif status == "unchanged":
+            unchanged_symbols.append(symbol)
 
-    if not any_success:
+    if not changed_symbols and not unchanged_symbols:
         print("\nKhông gộp được dữ liệu cho bất kỳ mã nào.")
         sys.exit(1)
 
+    _write_github_outputs(changed_symbols, unchanged_symbols, report)
+
+    if changed_symbols:
+        print(f"\nCó cập nhật: {', '.join(changed_symbols)}")
+    else:
+        print("\nKhông có nội dung cập nhật ở mã nào -> không cần upload Google Drive.")
     print("\nHoàn tất.")
 
 
