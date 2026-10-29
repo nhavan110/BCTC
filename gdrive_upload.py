@@ -24,8 +24,10 @@ ngay trong thư mục gốc, rồi upload/ghi đè file <MÃ>.xlsx và/hoặc
 Chạy SAU merge_financials.py.
 
 Chạy:
-    python gdrive_upload.py                    # upload tất cả mã có file .xlsx trong financials/
-    python gdrive_upload.py HPG,TCB,FPT          # chỉ upload các mã chỉ định
+    python gdrive_upload.py                          # upload tất cả file .xlsx trong financials/
+    python gdrive_upload.py HPG,TCB,FPT                # các mã chỉ định (cả file năm lẫn quý nếu có)
+    python gdrive_upload.py HPG.xlsx,TCB_Q.xlsx        # CHỈ đúng các file chỉ định (workflow dùng cách này
+                                                       #   để không upload file không có thay đổi)
 """
 
 import sys
@@ -46,16 +48,39 @@ FINANCIALS_DIR = "financials"
 FILE_SUFFIXES = ["", "_Q"]
 
 
+def _parse_targets(arg: str) -> dict:
+    """'HPG' -> mọi file của mã HPG; 'HPG.xlsx' -> chỉ file năm; 'HPG_Q.xlsx'
+    -> chỉ file quý. Trả về {mã: [hậu tố file cần upload]}."""
+    targets = {}
+    for tok in (t.strip().upper() for t in arg.split(",")):
+        if not tok:
+            continue
+        if tok.endswith(".XLSX"):
+            stem = tok[:-5]
+            if stem.endswith("_Q"):
+                symbol, suffixes = stem[:-2], ["_Q"]
+            else:
+                symbol, suffixes = stem, [""]
+        else:
+            symbol, suffixes = tok, list(FILE_SUFFIXES)
+        current = targets.setdefault(symbol, [])
+        for s in suffixes:
+            if s not in current:
+                current.append(s)
+    return targets
+
+
 def main():
     if len(sys.argv) > 1:
-        symbols = [s.strip().upper() for s in sys.argv[1].split(",") if s.strip()]
+        targets = _parse_targets(sys.argv[1])
     else:
         symbols = sorted(
             d for d in os.listdir(FINANCIALS_DIR)
             if os.path.isdir(os.path.join(FINANCIALS_DIR, d))
         ) if os.path.isdir(FINANCIALS_DIR) else []
+        targets = {s: list(FILE_SUFFIXES) for s in symbols}
 
-    if not symbols:
+    if not targets:
         print("Không có mã nào để upload.")
         return
 
@@ -64,14 +89,14 @@ def main():
     symbol_folders = list_subfolders(service, folder_id)
 
     uploaded = 0
-    for symbol in symbols:
+    for symbol, suffixes in targets.items():
         local_paths = {
             suffix: os.path.join(FINANCIALS_DIR, symbol, f"{symbol}{suffix}.xlsx")
-            for suffix in FILE_SUFFIXES
+            for suffix in suffixes
         }
         existing_local = {s: p for s, p in local_paths.items() if os.path.exists(p)}
         if not existing_local:
-            print(f"  Bỏ qua {symbol}: không thấy file .xlsx nào trong financials/{symbol}/")
+            print(f"  Bỏ qua {symbol}: không thấy file .xlsx nào cần upload trong financials/{symbol}/")
             continue
 
         sub_folder_id = get_or_create_subfolder(
