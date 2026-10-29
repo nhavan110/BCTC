@@ -54,7 +54,10 @@ jobs:
       - name: Run fetch script (theo NĂM)
         run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" year
 
+      # Mỗi bước merge ghi `changed=<các file .xlsx có dữ liệu mới>` vào
+      # $GITHUB_OUTPUT và cảnh báo khoản mục không khớp tên vào tab Summary.
       - name: Merge CSV -> Excel theo NĂM (3 sheet/mã, giữ lại lịch sử nhiều năm)
+        id: merge_year
         run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" year
 
       - name: Run fetch script (theo QUÝ)
@@ -62,16 +65,23 @@ jobs:
         run: python fetch_full_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" quarter
 
       - name: Merge CSV -> Excel theo QUÝ (ra <MÃ>_Q.xlsx riêng, giữ lại lịch sử nhiều quý)
+        id: merge_quarter
         if: ${{ github.event.inputs.fetch_quarter != 'false' }}
         run: python merge_financials.py "${{ github.event.inputs.symbols || 'HPG,TCB,FPT,PNJ,MWG,FRT,MBB,TCX' }}" quarter
 
       - name: Xoá CSV tạm (chỉ giữ lại file Excel)
         run: find financials -name "*.csv" -delete
 
-      - name: Đẩy file Excel đã cập nhật (năm + quý) lên lại Google Drive
-        run: python gdrive_upload.py
+      - name: Đẩy các file Excel có thay đổi (năm + quý) lên lại Google Drive
+        if: steps.merge_year.outputs.changed != '' || steps.merge_quarter.outputs.changed != ''
+        run: python gdrive_upload.py "${{ steps.merge_year.outputs.changed }},${{ steps.merge_quarter.outputs.changed }}"
+
+      - name: Thông báo - không có nội dung cập nhật
+        if: steps.merge_year.outputs.changed == '' && steps.merge_quarter.outputs.changed == ''
+        run: echo "::notice::Không có nội dung cập nhật ở mã nào (năm + quý) -> bỏ qua upload Google Drive."
 
       - name: Upload Excel as artifact
+        if: steps.merge_year.outputs.changed != '' || steps.merge_quarter.outputs.changed != ''
         uses: actions/upload-artifact@v4
         with:
           name: full-financial-statements
