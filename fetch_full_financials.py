@@ -18,6 +18,16 @@ REQUEST_DELAY_SECONDS = 5
 MAX_RETRIES = 3
 RATE_LIMIT_WAIT_SECONDS = 65
 
+# vnstock 4.0.x (nguồn VCI) mặc định chỉ trả 4 kỳ (limit=4) và hàm công khai
+# income_statement()/balance_sheet()/cash_flow() KHÔNG nhận tham số `limit`
+# (Finance lặng lẽ bỏ qua tham số lạ) -> mỗi lần chỉ được 4 năm. Vì vậy gọi
+# thẳng hàm nội bộ _get_financial_report() kèm limit lớn. Có thể đổi bằng biến
+# môi trường VNSTOCK_YEAR_LIMIT.
+try:
+    YEAR_LIMIT = int(os.getenv("VNSTOCK_YEAR_LIMIT", "20"))
+except ValueError:
+    YEAR_LIMIT = 20
+
 STATEMENTS = {
     "balance_sheet": "balance_sheet",
     "income_statement": "income_statement",
@@ -87,13 +97,35 @@ def _drop_unused_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _call_statement(finance, method_name: str) -> pd.DataFrame:
+    """Lấy báo cáo theo năm với giới hạn YEAR_LIMIT kỳ.
+
+    Ưu tiên gọi hàm nội bộ của provider (có tham số `limit`). Nếu vnstock đổi
+    cấu trúc nên không gọi được thì quay về hàm công khai (khi đó chỉ được
+    khoảng 4 năm) và in cảnh báo.
+    """
+    provider = getattr(finance, "_provider", None)
+    private = getattr(provider, "_get_financial_report", None)
+    if private is not None:
+        try:
+            return private(
+                method_name, period="year", lang="en", dropna=False, limit=YEAR_LIMIT
+            )
+        except TypeError as e:
+            print(f"  CẢNH BÁO: không gọi được _get_financial_report(limit=...): {e}"
+                  " -> dùng hàm công khai (có thể chỉ được 4 năm).")
+    else:
+        print("  CẢNH BÁO: vnstock không có _get_financial_report -> dùng hàm công khai "
+              "(có thể chỉ được 4 năm).")
+    return getattr(finance, method_name)(period="year", lang="en", dropna=False)
+
+
 def _fetch_one_statement(finance, symbol: str, method_name: str) -> pd.DataFrame:
     """Gọi một endpoint; nếu gặp rate limit thì chờ rồi tự retry."""
-    method = getattr(finance, method_name)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            df = method(period="year", lang="en", dropna=False)
+            df = _call_statement(finance, method_name)
             if df is None or df.empty:
                 raise RuntimeError(f"{method_name}() trả về rỗng cho mã {symbol}.")
 
@@ -166,7 +198,9 @@ def main():
         for label, df in statements.items():
             out_path = os.path.join(out_dir, f"{symbol}_{label}.csv")
             df.to_csv(out_path, index=False, encoding="utf-8-sig")
-            print(f"  Đã ghi {out_path}  (shape={df.shape})")
+            n_years = df.shape[1] - 1
+            print(f"  Đã ghi {out_path}  (shape={df.shape}, {n_years} năm: "
+                  f"{[c for c in df.columns if c != 'item']})")
             any_success = True
 
     if not any_success:
