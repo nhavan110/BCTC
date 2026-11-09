@@ -11,10 +11,15 @@ về vài năm gần nhất mỗi lần fetch):
     - Nếu "item" KHỚP với 1 dòng đã có -> merge các cột năm mới vào dòng đó
       (đè giá trị nếu năm đã tồn tại, thêm cột nếu là năm mới). Giá trị mới
       rỗng (NaN) không đè lên số cũ.
-    - Nếu "item" KHÔNG KHỚP -> thêm nguyên dòng đó từ dữ liệu mới thành 1
-      dòng MỚI ở CUỐI sheet (không chèn giữa để không làm lệch địa chỉ ô mà
-      các sheet công thức tự tạo đang tham chiếu). Dòng cũ giữ nguyên. Script
-      in cảnh báo kèm gợi ý "có thể là đổi tên của ..." để đối chiếu thủ công.
+    - Nếu "item" KHÔNG KHỚP -> KHÔNG đụng tới khối dữ liệu cũ (cột A + các
+      cột năm). Toàn bộ các khoản mục không khớp của lần chạy đó được ghi
+      thành 1 KHỐI CỘT MỚI ở NGOÀI CÙNG BÊN PHẢI của sheet: 1 cột tên khoản
+      mục mới (tiêu đề "item_khong_khop_N") + các cột năm của chính các khoản
+      mục đó, cách khối trước 1 cột trống. Script in cảnh báo (hiện thành
+      annotation trên GitHub Actions + tab Summary) kèm vị trí cột và gợi ý
+      "có thể là đổi tên của ..." để đối chiếu thủ công.
+    - Lần chạy sau, khoản mục từng bị ghi sang khối bên phải mà xuất hiện lại
+      sẽ được ghép vào đúng dòng của khối đó (không tạo khối mới nữa).
     - Tên khoản mục trùng nhau trong cùng 1 báo cáo được ghép theo thứ tự
       xuất hiện (dòng trùng thứ n bên mới ghép với dòng trùng thứ n bên cũ).
     - Nếu file Excel chưa tồn tại (lần chạy đầu tiên) -> dùng toàn bộ CSV
@@ -25,7 +30,7 @@ mới thì file giữ nguyên và không cần upload lên Google Drive. Danh s�
 thay đổi được ghi vào $GITHUB_OUTPUT (changed=HPG,TCB) để workflow quyết định
 có upload hay không; cảnh báo/tóm tắt ghi vào $GITHUB_STEP_SUMMARY.
 
-Nếu file Excel đã có thêm sheet khác (vd "financial_ratios" tự thêm sau
+Nếu file Excel đã có thêm sheet khác (vd "chi_so_tai_chinh" tự thêm sau
 này), sheet đó được giữ nguyên, không bị đụng tới.
 
 Chạy:
@@ -49,6 +54,7 @@ FINANCIALS_DIR = "financials"
 
 FONT_NAME = "Tahoma"
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+EXTRA_HEADER_FILL = PatternFill("solid", fgColor="C55A11")  # khối khoản mục không khớp
 THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
@@ -61,6 +67,11 @@ STATEMENT_SHEETS = {
 
 DROP_COLUMNS = ["item_en", "item_id"]
 
+# Tiêu đề cột tên khoản mục: khối chính là "item"; các khối không khớp ghi ở
+# bên phải là "item_khong_khop_1", "item_khong_khop_2", ...
+ITEM_PREFIX = "item"
+EXTRA_ITEM_HEADER = "item_khong_khop_{n}"
+
 # Số dòng tối đa in ra / ghi vào summary cho mỗi danh sách cảnh báo.
 MAX_LISTED = 30
 
@@ -71,6 +82,18 @@ def _load_csv(path: str) -> pd.DataFrame:
     if drop_cols:
         df = df.drop(columns=drop_cols)
     return df
+
+
+def _year_label(h) -> str:
+    """Chuẩn hoá tiêu đề cột năm về chuỗi: 2018, 2018.0, '2018' -> '2018'."""
+    s = str(h).strip()
+    try:
+        f = float(s)
+        if f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError):
+        pass
+    return s
 
 
 def _sort_year_columns(cols):
@@ -106,75 +129,184 @@ def _keys_with_occurrence(items):
     return keys
 
 
-def merge_sheet(old_df: pd.DataFrame, new_df: pd.DataFrame):
-    """Merge new_df vào old_df theo cột 'item'. Xem quy tắc ở đầu file.
+def _to_numeric_years(df: pd.DataFrame) -> pd.DataFrame:
+    for c in df.columns:
+        if c != "item":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
 
-    Trả về (merged_df, info) với info = {
-        "appended": [(tên khoản mục mới không khớp, gợi ý tên cũ hoặc None)],
-        "orphans":  [tên khoản mục cũ không xuất hiện trong dữ liệu mới],
+
+# --------------------------------------------------------------------------
+# Đọc / ghi sheet báo cáo gồm nhiều KHỐI cột (khối chính + các khối bên phải)
+# --------------------------------------------------------------------------
+
+def _read_statement_blocks(path: str, sheet_name: str):
+    """Đọc 1 sheet báo cáo thành danh sách khối [DataFrame, ...].
+
+    Khối 0 = khối chính (cột A 'item' + các cột năm liền sau). Mỗi cột có tiêu
+    đề bắt đầu bằng 'item' (vd 'item_khong_khop_1') mở đầu 1 khối mới; các cột
+    năm liền sau nó (cho đến cột 'item' kế tiếp) thuộc khối đó. Cột trống phân
+    cách giữa các khối bị bỏ qua. Mỗi DataFrame có cột 'item' + các cột năm
+    (tên chuỗi, giá trị số, ô rỗng = NaN). Trả về None nếu không đọc được."""
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    if sheet_name not in wb.sheetnames:
+        return None
+    rows = list(wb[sheet_name].iter_rows(values_only=True))
+    if not rows:
+        return None
+    header = list(rows[0])
+    starts = [
+        j for j, h in enumerate(header)
+        if h is not None and str(h).strip().lower().startswith(ITEM_PREFIX)
+    ]
+    if not starts or starts[0] != 0:
+        starts = [0] + [s for s in starts if s != 0]
+
+    blocks = []
+    for bi, s in enumerate(starts):
+        end = starts[bi + 1] if bi + 1 < len(starts) else len(header)
+        cols = [j for j in range(s + 1, end)
+                if header[j] is not None and str(header[j]).strip() != ""]
+        data = []
+        for r in rows[1:]:
+            item = r[s] if s < len(r) else None
+            if item is None or str(item).strip() == "":
+                continue
+            data.append([item] + [r[j] if j < len(r) else None for j in cols])
+        df = pd.DataFrame(data, columns=["item"] + [_year_label(header[j]) for j in cols])
+        blocks.append(_to_numeric_years(df))
+    return blocks
+
+
+def _block_layout(blocks):
+    """Vị trí cột (chỉ số bắt đầu 1-based, số cột) của từng khối khi ghi ra
+    Excel; giữa 2 khối có 1 cột trống."""
+    layout = []
+    col = 1
+    for b in blocks:
+        n = b.shape[1]
+        layout.append((col, n))
+        col += n + 1
+    return layout
+
+
+def _block_range_text(blocks, bi) -> str:
+    start, n = _block_layout(blocks)[bi]
+    return f"{get_column_letter(start)}:{get_column_letter(start + n - 1)}"
+
+
+def merge_sheet(old_blocks, new_df: pd.DataFrame):
+    """Merge new_df vào danh sách khối old_blocks. Xem quy tắc ở đầu file.
+
+    Trả về (blocks, info) với info = {
+        "appended": [(tên khoản mục không khớp, gợi ý tên cũ hoặc None)],
+        "orphans":  [tên khoản mục cũ (khối chính) không có trong dữ liệu mới],
+        "new_block_index": chỉ số khối vừa tạo ở bên phải (None nếu không tạo),
     }"""
-    info = {"appended": [], "orphans": []}
+    info = {"appended": [], "orphans": [], "new_block_index": None}
 
     new_df = new_df.copy()
-    new_df.columns = [str(c) for c in new_df.columns]
+    new_df.columns = [_year_label(c) if c != "item" else c for c in new_df.columns]
+    new_df = _to_numeric_years(new_df)
     year_cols_new = [c for c in new_df.columns if c != "item"]
 
-    if old_df is None or old_df.empty:
-        # Chưa có dữ liệu cũ -> dùng dữ liệu mới làm nền.
+    if not old_blocks:
+        # Chưa có dữ liệu cũ -> dùng dữ liệu mới làm nền (khối chính).
         merged = new_df.copy()
-    else:
-        merged = old_df.copy().reset_index(drop=True)
-        merged.columns = [str(c) for c in merged.columns]
+        merged = merged[["item"] + _sort_year_columns(year_cols_new)]
+        return [merged], info
 
-        # Đảm bảo các cột năm mới tồn tại trong merged.
+    blocks = [b.copy().reset_index(drop=True) for b in old_blocks]
+    main = blocks[0]
+
+    def put(block, idx, row):
+        """Ghi các giá trị khác rỗng của `row` vào dòng idx của block
+        (tạo cột năm nếu chưa có, không đè số cũ bằng rỗng)."""
+        wrote = False
         for yc in year_cols_new:
-            if yc not in merged.columns:
-                merged[yc] = np.nan
-
-        old_keys = _keys_with_occurrence(merged["item"])
-        key_to_index = {}
-        for i, k in enumerate(old_keys):
-            key_to_index.setdefault(k, i)
-
-        matched = set()
-        unmatched_rows = []
-        new_keys = _keys_with_occurrence(new_df["item"])
-        for key, (_, row) in zip(new_keys, new_df.iterrows()):
-            old_idx = key_to_index.get(key)
-            if old_idx is None:
-                unmatched_rows.append(row)
+            val = row[yc]
+            if pd.isna(val):
                 continue
-            matched.add(old_idx)
-            for yc in year_cols_new:
-                val = row[yc]
-                if pd.isna(val):
-                    continue  # không đè số cũ bằng giá trị rỗng
-                merged.loc[old_idx, yc] = val
+            if yc not in block.columns:
+                block[yc] = np.nan
+            block.loc[idx, yc] = val
+            wrote = True
+        return wrote
 
-        # Khoản mục cũ không còn xuất hiện trong dữ liệu mới.
-        orphan_items = [
-            str(merged["item"].iloc[i]) for i in range(len(old_keys)) if i not in matched
-        ]
-        info["orphans"] = orphan_items
-        lookup = {o.casefold(): o for o in orphan_items}
+    # 1) Khớp với khối chính.
+    main_keys = _keys_with_occurrence(main["item"])
+    key_to_index = {}
+    for i, k in enumerate(main_keys):
+        key_to_index.setdefault(k, i)
 
-        # Không khớp -> thêm nguyên dòng mới xuống CUỐI sheet.
-        if unmatched_rows:
-            for row in unmatched_rows:
-                name = str(row["item"])
-                guess = difflib.get_close_matches(name.casefold(), list(lookup), n=1, cutoff=0.6)
-                info["appended"].append((name, lookup[guess[0]] if guess else None))
-            add_df = pd.DataFrame(unmatched_rows).reindex(columns=merged.columns)
-            merged = pd.concat([merged, add_df], ignore_index=True)
+    matched_main = set()
+    unmatched_rows = []
+    new_keys = _keys_with_occurrence(new_df["item"])
+    for key, (_, row) in zip(new_keys, new_df.iterrows()):
+        old_idx = key_to_index.get(key)
+        if old_idx is None:
+            unmatched_rows.append(row)
+            continue
+        matched_main.add(old_idx)
+        put(main, old_idx, row)
 
-    year_cols = _sort_year_columns([c for c in merged.columns if c != "item"])
-    merged = merged[["item"] + year_cols]
-    return merged, info
+    info["orphans"] = [
+        str(main["item"].iloc[i]) for i in range(len(main_keys)) if i not in matched_main
+    ]
+    lookup = {o.casefold(): o for o in info["orphans"]}
+
+    # 2) Dòng không khớp khối chính: thử ghép vào các khối không khớp đã có
+    #    ở bên phải (từ các lần chạy trước), khoá = (tên chuẩn hoá, thứ tự
+    #    xuất hiện trong nhóm các dòng không khớp).
+    extra_key_maps = []
+    for b in blocks[1:]:
+        m = {}
+        for i, k in enumerate(_keys_with_occurrence(b["item"])):
+            m.setdefault(k, i)
+        extra_key_maps.append(m)
+
+    counter = {}
+    remaining = []
+    for row in unmatched_rows:
+        n = _norm_item(row["item"])
+        j = counter.get(n, 0)
+        counter[n] = j + 1
+        placed = False
+        for bi, m in enumerate(extra_key_maps, start=1):
+            idx = m.get((n, j))
+            if idx is not None:
+                put(blocks[bi], idx, row)
+                placed = True
+                break
+        if not placed:
+            remaining.append(row)
+
+    # 3) Còn lại -> 1 khối mới ở ngoài cùng bên phải. Bỏ qua dòng không có
+    #    bất kỳ giá trị nào (khoản mục rỗng hoàn toàn, không có gì để ghi).
+    remaining = [r for r in remaining if any(not pd.isna(r[yc]) for yc in year_cols_new)]
+    if remaining:
+        for row in remaining:
+            name = str(row["item"])
+            guess = difflib.get_close_matches(name.casefold(), list(lookup), n=1, cutoff=0.6)
+            info["appended"].append((name, lookup[guess[0]] if guess else None))
+        add_df = pd.DataFrame(remaining).reset_index(drop=True)
+        used_years = _sort_year_columns(
+            [yc for yc in year_cols_new if add_df[yc].notna().any()]
+        )
+        blocks.append(add_df[["item"] + used_years])
+        info["new_block_index"] = len(blocks) - 1
+
+    # 4) Sắp xếp cột năm trong từng khối (cũ -> mới).
+    out = []
+    for b in blocks:
+        yrs = _sort_year_columns([c for c in b.columns if c != "item"])
+        out.append(b[["item"] + yrs])
+    return out, info
 
 
-def _frames_same(old_df, new_df) -> bool:
-    """True nếu merged (new_df) không khác gì dữ liệu cũ (old_df): cùng cột,
-    cùng danh sách khoản mục theo thứ tự, giá trị số bằng nhau (có dung sai)."""
+def _frame_same(old_df, new_df) -> bool:
+    """True nếu 2 khối giống nhau: cùng cột, cùng danh sách khoản mục theo thứ
+    tự, giá trị số bằng nhau (có dung sai)."""
     if old_df is None:
         return False
     a = old_df.reset_index(drop=True).copy()
@@ -195,15 +327,24 @@ def _frames_same(old_df, new_df) -> bool:
     return True
 
 
+def _blocks_same(old_blocks, new_blocks) -> bool:
+    if old_blocks is None or len(old_blocks) != len(new_blocks):
+        return False
+    return all(_frame_same(o, n) for o, n in zip(old_blocks, new_blocks))
+
+
 def _report_mismatch(symbol: str, sheet_info: dict) -> None:
     """In cảnh báo khoản mục không khớp tên (hiện thành annotation trên GitHub Actions)."""
     for sheet, info in sheet_info.items():
         appended = info["appended"]
         orphans = info["orphans"]
         if appended:
+            where = info.get("new_block_range")
+            where_txt = f" (cột {where})" if where else ""
             print(
                 f"::warning::{symbol}/{sheet}: {len(appended)} khoản mục KHÔNG khớp tên với "
-                f"dữ liệu cũ -> đã thêm thành dòng mới ở cuối sheet, cần đối chiếu thủ công"
+                f"dữ liệu cũ -> đã ghi thành khối cột mới ở ngoài cùng bên phải{where_txt}, "
+                f"cần đối chiếu thủ công"
             )
             for name, guess in appended[:MAX_LISTED]:
                 hint = f"  (có thể là đổi tên của: {guess})" if guess else ""
@@ -240,14 +381,17 @@ def _write_github_outputs(changed, unchanged, report) -> None:
     mismatch_lines = []
     for symbol, sheet_info in report.items():
         for sheet, info in sheet_info.items():
+            where = info.get("new_block_range")
+            where_txt = f" (cột {where})" if where else ""
             for name, guess in info["appended"][:MAX_LISTED]:
                 hint = f" — có thể là đổi tên của `{guess}`" if guess else ""
-                mismatch_lines.append(f"- `{symbol}/{sheet}`: `{name}`{hint}")
+                mismatch_lines.append(f"- `{symbol}/{sheet}`{where_txt}: `{name}`{hint}")
     if mismatch_lines:
         lines += [
             "",
             "### Khoản mục không khớp tên",
-            "Đã thêm thành dòng mới ở cuối sheet, cần đối chiếu thủ công:",
+            "Đã ghi thành khối cột mới (tên khoản mục + các năm) ở ngoài cùng bên phải "
+            "của sheet, cần đối chiếu thủ công:",
             *mismatch_lines,
         ]
 
@@ -271,36 +415,59 @@ def _autofit_number_column_width(ws, col_idx, min_width=10, max_width=24, paddin
     return max(min_width, min(max_width, max_len + padding))
 
 
-def _format_statement_sheet(ws) -> None:
+def _format_statement_sheet(ws, layout) -> None:
     """Định dạng chuẩn cho 1 sheet báo cáo (balance_sheet/income_statement/
-    cash_flow) vừa được pandas ghi ra: font Tahoma, dòng tiêu đề (năm) in
-    đậm/nền màu, số có dấu phân cách nghìn, cố định dòng 1 + cột A, viền
-    mảnh cho toàn vùng dữ liệu.
-    Độ rộng cột: cột A (khoản mục) giữ cố định vì tên khoản mục dài, không
-    autofit theo nội dung (sẽ ra cột quá rộng); các cột năm (số) thì autofit
-    theo nội dung thực tế để hiển thị đủ luôn, không cần mở file chỉnh tay."""
+    cash_flow) vừa được ghi ra: font Tahoma, dòng tiêu đề in đậm/nền màu
+    (khối chính màu xanh, các khối không khớp bên phải màu cam), số có dấu
+    phân cách nghìn, cố định dòng 1 + cột A, viền mảnh cho vùng dữ liệu của
+    từng khối. `layout` = [(cột bắt đầu 1-based, số cột), ...] từng khối.
+    Cột tên khoản mục giữ độ rộng cố định; các cột năm autofit theo nội dung;
+    cột trống phân cách giữa các khối hẹp."""
     if ws.max_row < 1 or ws.max_column < 1:
         return
 
     ws.sheet_view.showGridLines = False
-    ws.column_dimensions["A"].width = 42
-    for col_idx in range(2, ws.max_column + 1):
-        width = _autofit_number_column_width(ws, col_idx)
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
-        for cell in row:
-            cell.border = BORDER
-            if cell.row == 1:
-                cell.font = Font(name=FONT_NAME, bold=True, color="FFFFFF")
-                cell.fill = HEADER_FILL
-                cell.alignment = Alignment(horizontal="center" if cell.column > 1 else "left")
-            else:
-                cell.font = Font(name=FONT_NAME, size=10)
-                if cell.column > 1:
-                    cell.number_format = "#,##0;(#,##0);\"-\""
+    for bi, (start, n) in enumerate(layout):
+        fill = HEADER_FILL if bi == 0 else EXTRA_HEADER_FILL
+        ws.column_dimensions[get_column_letter(start)].width = 42
+        for col_idx in range(start + 1, start + n):
+            ws.column_dimensions[get_column_letter(col_idx)].width = (
+                _autofit_number_column_width(ws, col_idx)
+            )
+        if bi + 1 < len(layout):
+            ws.column_dimensions[get_column_letter(start + n)].width = 3  # cột phân cách
+
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
+                                min_col=start, max_col=start + n - 1):
+            for cell in row:
+                cell.border = BORDER
+                if cell.row == 1:
+                    cell.font = Font(name=FONT_NAME, bold=True, color="FFFFFF")
+                    cell.fill = fill
+                    cell.alignment = Alignment(
+                        horizontal="center" if cell.column > start else "left")
+                else:
+                    cell.font = Font(name=FONT_NAME, size=10)
+                    if cell.column > start:
+                        cell.number_format = "#,##0;(#,##0);\"-\""
 
     ws.freeze_panes = "B2"
+
+
+def _write_statement_blocks(writer, sheet_name, blocks):
+    """Ghi các khối cạnh nhau trên cùng 1 sheet (cách nhau 1 cột trống)."""
+    n_extra = 0
+    for bi, (b, (start, _n)) in enumerate(zip(blocks, _block_layout(blocks))):
+        df = b.copy()
+        if bi == 0:
+            item_header = "item"
+        else:
+            n_extra += 1
+            item_header = EXTRA_ITEM_HEADER.format(n=n_extra)
+        df.columns = [item_header] + [c for c in df.columns if c != "item"]
+        df.to_excel(writer, sheet_name=sheet_name, index=False, startcol=start - 1)
+    _format_statement_sheet(writer.sheets[sheet_name], _block_layout(blocks))
 
 
 def process_symbol(symbol: str, report: dict) -> str:
@@ -313,22 +480,23 @@ def process_symbol(symbol: str, report: dict) -> str:
         print(f"  Bỏ qua {symbol}: không tìm thấy thư mục {sym_dir}")
         return "skipped"
 
-    # Chỉ đọc bằng pandas 3 sheet báo cáo gốc (dữ liệu thuần, không công thức).
-    # KHÔNG dùng pd.read_excel cho toàn bộ workbook: pandas chỉ đọc được giá
-    # trị đã tính sẵn (cached value) của ô công thức chứ không đọc được công
-    # thức, nên nếu nạp rồi ghi lại các sheet khác (vd "chi_so_tai_chinh")
-    # qua pandas thì mọi công thức trong đó sẽ bị "phẳng hoá" thành số tĩnh.
-    # Các sheet ngoài 3 sheet báo cáo được giữ nguyên 100% (kể cả công thức,
-    # định dạng) bằng cách copy trực tiếp qua openpyxl ở bước bên dưới.
-    existing_sheets = {}
+    # Chỉ đọc 3 sheet báo cáo gốc (dữ liệu thuần, không công thức), mỗi sheet
+    # thành danh sách khối (khối chính + các khối không khớp bên phải).
+    # KHÔNG ghi lại các sheet khác qua pandas: pandas chỉ đọc được giá trị đã
+    # tính sẵn của ô công thức nên sẽ "phẳng hoá" công thức (vd sheet
+    # "chi_so_tai_chinh"). Các sheet ngoài 3 sheet báo cáo được giữ nguyên
+    # 100% (kể cả công thức, định dạng) bằng cách copy trực tiếp qua openpyxl.
+    existing_blocks = {}
     other_sheet_names = []
     if os.path.exists(out_path):
-        try:
-            existing_sheets = pd.read_excel(
-                out_path, sheet_name=list(STATEMENT_SHEETS.keys()), engine="openpyxl")
-        except Exception as e:
-            print(f"  CẢNH BÁO: không đọc được file Excel cũ {out_path} ({e}) -> tạo mới.")
-            existing_sheets = {}
+        for sheet_name in STATEMENT_SHEETS:
+            try:
+                blocks = _read_statement_blocks(out_path, sheet_name)
+            except Exception as e:
+                print(f"  CẢNH BÁO: không đọc được sheet '{sheet_name}' trong {out_path} ({e}) -> tạo mới.")
+                blocks = None
+            if blocks is not None:
+                existing_blocks[sheet_name] = blocks
         try:
             other_sheet_names = [
                 s for s in openpyxl.load_workbook(out_path, read_only=True).sheetnames
@@ -343,18 +511,20 @@ def process_symbol(symbol: str, report: dict) -> str:
 
     for sheet_name, suffix in STATEMENT_SHEETS.items():
         csv_path = os.path.join(sym_dir, f"{symbol}_{suffix}.csv")
-        old_df = existing_sheets.get(sheet_name)
+        old_blocks = existing_blocks.get(sheet_name)
         if not os.path.exists(csv_path):
             print(f"  Bỏ qua sheet '{sheet_name}': không tìm thấy {csv_path}")
-            if old_df is not None:
-                output_sheets[sheet_name] = old_df  # giữ nguyên sheet cũ, không làm mất
+            if old_blocks is not None:
+                output_sheets[sheet_name] = old_blocks  # giữ nguyên sheet cũ, không làm mất
             continue
 
         new_df = _load_csv(csv_path)
-        merged, info = merge_sheet(old_df, new_df)
-        output_sheets[sheet_name] = merged
+        merged_blocks, info = merge_sheet(old_blocks, new_df)
+        if info["new_block_index"] is not None:
+            info["new_block_range"] = _block_range_text(merged_blocks, info["new_block_index"])
+        output_sheets[sheet_name] = merged_blocks
         sheet_info[sheet_name] = info
-        if not _frames_same(old_df, merged):
+        if not _blocks_same(old_blocks, merged_blocks):
             changed = True
 
     if not sheet_info:
@@ -376,8 +546,7 @@ def process_symbol(symbol: str, report: dict) -> str:
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         for name in ordered_names:
-            output_sheets[name].to_excel(writer, sheet_name=name, index=False)
-            _format_statement_sheet(writer.sheets[name])
+            _write_statement_blocks(writer, name, output_sheets[name])
 
     # Copy nguyên trạng (công thức + định dạng) các sheet khác từ file cũ
     # (vd "chi_so_tai_chinh") sang file vừa ghi ở trên.
